@@ -3,18 +3,23 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand"
 
 	"xray-vpn-tg-bot/internal/apperrors"
 	"xray-vpn-tg-bot/internal/domain"
 	"xray-vpn-tg-bot/internal/repository"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // UserService defines the interface for user-related operations.
 type UserService interface {
 	GetOrCreate(ctx context.Context, tgID int64, isBot bool, firstName, lastName, username, languageCode string, isPremium bool) (*domain.User, error)
 	GetByTelegramID(ctx context.Context, id int64) (*domain.User, error)
+	IsAdmin(ctx context.Context, userID primitive.ObjectID) (bool, error)
+	SetAdmin(ctx context.Context, telegramID int64, isAdmin bool) error
 	// Add other user methods here (e.g., GetByID, UpdateBalance, etc.)
 }
 
@@ -134,6 +139,51 @@ func (s *userService) GetByTelegramID(ctx context.Context, id int64) (*domain.Us
 		return nil, err
 	}
 	return user, nil
+}
+
+// IsAdmin проверяет, является ли пользователь администратором
+func (s *userService) IsAdmin(ctx context.Context, userID primitive.ObjectID) (bool, error) {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		s.logger.WarnContext(ctx, "Failed to get user for admin check", slog.String("user_id", userID.Hex()), slog.Any("error", err))
+		return false, err
+	}
+
+	return user.IsAdmin, nil
+}
+
+// SetAdmin устанавливает или снимает статус администратора для пользователя
+func (s *userService) SetAdmin(ctx context.Context, telegramID int64, isAdmin bool) error {
+	user, err := s.GetByTelegramID(ctx, telegramID)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "Failed to get user by telegram ID", slog.Int64("telegram_id", telegramID), slog.Any("error", err))
+		return err
+	}
+
+	if user.IsAdmin == isAdmin {
+		status := "уже является"
+		if !isAdmin {
+			status = "уже не является"
+		}
+		s.logger.InfoContext(ctx, fmt.Sprintf("User %s администратором", status), slog.Int64("telegram_id", telegramID))
+		return nil
+	}
+
+	user.IsAdmin = isAdmin
+
+	err = s.userRepo.Update(ctx, user)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "Failed to update user admin status", slog.Int64("telegram_id", telegramID), slog.Any("error", err))
+		return err
+	}
+
+	action := "назначен"
+	if !isAdmin {
+		action = "снят с должности"
+	}
+	s.logger.InfoContext(ctx, fmt.Sprintf("Пользователь %s администратором", action), slog.Int64("telegram_id", telegramID))
+
+	return nil
 }
 
 // generateReferralCode generates a random referral code.

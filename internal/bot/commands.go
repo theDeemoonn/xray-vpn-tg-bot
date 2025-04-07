@@ -6,7 +6,6 @@ import (
 
 	gobot "github.com/go-telegram/bot"
 	models "github.com/go-telegram/bot/models"
-	// tu "github.com/mymmrac/telego/telegoutil" // Not needed for BotCommand struct
 )
 
 // setCommands registers the bot commands for the menu.
@@ -17,6 +16,7 @@ func (b *Bot) setCommands() error {
 		{Command: "buy", Description: "🛒 Купить подписку"},
 		{Command: "referral", Description: "🎁 Реферальная программа"},
 		{Command: "faq", Description: "❓ Помощь и FAQ"},
+		{Command: "makeadmin", Description: "🔑 Назначить администратора (только для админов)"},
 	}
 
 	// Use a background context for setting commands

@@ -8,16 +8,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// --- Main Menu ---
-const (
-	MainMenuButtonMySubscriptions = "🚀 Мои подписки"
-	MainMenuButtonBuySubscription = "🛒 Купить подписку"
-	MainMenuButtonReferral        = "🎁 Реф. программа"
-	MainMenuButtonInstructions    = "📱 Инструкции"
-	MainMenuButtonFAQ             = "❓ FAQ"
-	MainMenuButtonSupport         = "💬 Поддержка"
-)
-
 // --- Дополнительные константы для клавиатур ---
 const (
 	callbackActionSupport = "support"
@@ -45,9 +35,21 @@ func mainMenuKeyboard() *models.ReplyKeyboardMarkup {
 			{{Text: MainMenuButtonMySubscriptions}, {Text: MainMenuButtonBuySubscription}},
 			{{Text: MainMenuButtonInstructions}, {Text: MainMenuButtonFAQ}},
 			{{Text: MainMenuButtonReferral}, {Text: MainMenuButtonSupport}},
-			// Add admin buttons here conditionally if needed
+			// Кнопка админа добавляется только через MainMenuKeyboardWithAdmin
 		},
 	}
+}
+
+// MainMenuKeyboardWithAdmin возвращает основную клавиатуру меню с дополнительными кнопками администратора
+func MainMenuKeyboardWithAdmin(isAdmin bool) *models.ReplyKeyboardMarkup {
+	kb := mainMenuKeyboard()
+
+	if isAdmin {
+		adminButton := []models.KeyboardButton{{Text: MainMenuButtonAdmin}}
+		kb.Keyboard = append(kb.Keyboard, adminButton)
+	}
+
+	return kb
 }
 
 // createPlansKeyboard создает inline клавиатуру для выбора тарифных планов
@@ -234,8 +236,8 @@ func createBackButtonRow(callbackData string) []models.InlineKeyboardButton {
 
 // --- Functions returning keyboards (if needed, e.g., for admin panel) ---
 
-// Example: adminMenuKeyboard (conditional display logic would be elsewhere)
-func adminMenuKeyboard() *models.ReplyKeyboardMarkup {
+// AdminMenuKeyboard возвращает клавиатуру панели администратора
+func AdminMenuKeyboard() *models.ReplyKeyboardMarkup {
 	return &models.ReplyKeyboardMarkup{
 		ResizeKeyboard: true,
 		Keyboard: [][]models.KeyboardButton{

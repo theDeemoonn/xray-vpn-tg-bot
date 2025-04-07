@@ -39,10 +39,31 @@ func (b *Bot) startHandler(ctx context.Context, bot *gobot.Bot, update *models.U
 	}
 	b.logger.InfoContext(ctx, "Handling /start command", slog.Int64("chat_id", chatID), slog.String("user_db_id", user.ID.Hex()))
 
+	// Проверяем, является ли пользователь администратором по ID из конфигурации
+	// и автоматически назначаем администратором при первом запуске
+	if b.cfg.Telegram.AdminID != 0 && user.TelegramID == b.cfg.Telegram.AdminID {
+		// Проверяем текущий статус администратора
+		isAdmin, err := b.userService.IsAdmin(ctx, user.ID)
+		if err == nil && !isAdmin {
+			// Если пользователь с ID из конфигурации еще не администратор,
+			// то назначаем его администратором
+			b.logger.InfoContext(ctx, "Auto-assigning admin status to configured admin ID",
+				slog.Int64("telegram_id", user.TelegramID))
+
+			// Устанавливаем статус администратора
+			err = b.userService.SetAdmin(ctx, user.TelegramID, true)
+			if err != nil {
+				b.logger.ErrorContext(ctx, "Failed to auto-assign admin status",
+					slog.Int64("telegram_id", user.TelegramID),
+					slog.Any("error", err))
+			}
+		}
+	}
+
 	params := &gobot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        fmt.Sprintf("Добро пожаловать, %s! 👋\n\nЯ ваш помощник для управления VPN-подписками.\nИспользуйте меню ниже для навигации.", tgUser.FirstName),
-		ReplyMarkup: b.mainMenuKeyboard(),
+		ReplyMarkup: b.getUserKeyboard(ctx, user),
 	}
 
 	_, err := bot.SendMessage(ctx, params)
@@ -603,7 +624,7 @@ func (b *Bot) handleServerSelectionCallback(ctx context.Context, bot *gobot.Bot,
 	callbackData := update.CallbackQuery.Data
 
 	// Use the correct constant
-	parts := strings.Split(strings.TrimPrefix(callbackData, callbackActionConfirmServer), "_")
+	parts := strings.Split(strings.TrimPrefix(callbackData, callbackActionConfigureServer), ":")
 	if len(parts) != 2 {
 		b.logger.ErrorContext(ctx, "Invalid server confirmation callback data format", slog.String("data", callbackData))
 		b.sendUserError(ctx, bot, chatID, "Некорректные данные выбора сервера.")
@@ -997,8 +1018,13 @@ func (b *Bot) defaultHandler(ctx context.Context, bot *gobot.Bot, update *models
 		slog.String("user_id", userIDHex),
 		slog.String("text", text))
 
-	// Send a helpful message
-	b.sendUserMessage(ctx, bot, chatID, "Извините, я не понял вашу команду. Пожалуйста, используйте кнопки меню или команду /start.")
+	// Send a helpful message with the correct keyboard
+	params := &gobot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "Извините, я не понял вашу команду. Пожалуйста, используйте кнопки меню или команду /start.",
+		ReplyMarkup: b.getUserKeyboard(ctx, user),
+	}
+	_, _ = bot.SendMessage(ctx, params)
 }
 
 // --- Payment Handlers --- //

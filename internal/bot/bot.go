@@ -12,27 +12,11 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-// Callback action prefixes
-const (
-	callbackActionSelectPlan          = "plan_id:"
-	callbackActionGetConfig           = "get_config:"
-	callbackActionSelectServer        = "select_srv:"
-	callbackActionConfigureServer     = "config_srv:"
-	callbackActionConfirmServer       = "confirm_srv_"
-	callbackActionFAQCategory         = "faq_cat:"
-	callbackActionFAQQuestion         = "faq_q:"
-	callbackActionInstructionPlatform = "instr_plat:"
-	callbackActionInstructionDetails  = "instr_det:"
-	callbackActionBackToFAQ           = "back_faq"
-	callbackActionBackToInstructions  = "back_instr"
-	callbackActionBackToHelpRoot      = "back_help"
-)
-
 // Bot represents the Telegram bot application using go-telegram/bot
 type Bot struct {
 	api                 *gobot.Bot
-	logger              *slog.Logger
 	cfg                 *config.Config
+	logger              *slog.Logger
 	userService         service.UserService
 	serverService       service.ServerService
 	subscriptionService service.SubscriptionService
@@ -79,12 +63,19 @@ func New(
 
 	// Register command and text handlers (defined in handlers.go)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/start", gobot.MatchTypeExact, b.startHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/subscriptions", gobot.MatchTypeExact, b.mySubscriptionsHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/buy", gobot.MatchTypeExact, b.buySubscriptionHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/referral", gobot.MatchTypeExact, b.referralHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/faq", gobot.MatchTypeExact, b.faqHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/makeadmin", gobot.MatchTypePrefix, b.makeAdminHandler)
+
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonMySubscriptions, gobot.MatchTypeExact, b.mySubscriptionsHandler)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonBuySubscription, gobot.MatchTypeExact, b.buySubscriptionHandler)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonReferral, gobot.MatchTypeExact, b.referralHandler)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonInstructions, gobot.MatchTypeExact, b.instructionHandler)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonFAQ, gobot.MatchTypeExact, b.faqHandler)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonSupport, gobot.MatchTypeExact, b.supportHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonAdmin, gobot.MatchTypeExact, b.adminHandler)
 
 	// Register callback query handlers (defined in handlers.go)
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionSelectPlan, gobot.MatchTypePrefix, b.handlePlanSelectionCallback)
@@ -122,9 +113,9 @@ func (b *Bot) Stop() {
 
 // mainMenuKeyboard is a wrapper method calling the keyboard function.
 func (b *Bot) mainMenuKeyboard() models.ReplyKeyboardMarkup {
-	// This method remains on Bot, but calls the actual keyboard generation function
-	// which is now in keyboards.go
-	return *mainMenuKeyboard() // Calls the function defined in keyboards.go
+	// В b.api.Context нет доступа к контексту метода, поэтому используем
+	// стандартную клавиатуру без проверки на админа
+	return *mainMenuKeyboard()
 }
 
 // --- Removed Handlers, Middlewares, Helpers --- //

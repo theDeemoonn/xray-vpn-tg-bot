@@ -21,6 +21,7 @@ type User struct {
 	CreatedAt     time.Time          `bson:"created_at" json:"created_at"`
 	UpdatedAt     time.Time          `bson:"updated_at" json:"updated_at"`
 	AgreedToTerms bool               `bson:"agreed_to_terms" json:"agreed_to_terms"` // Has the user agreed to terms?
+	IsAdmin       bool               `bson:"is_admin" json:"is_admin"`               // Флаг администратора
 }
 
 // NewUser creates a new user instance
@@ -37,5 +38,6 @@ func NewUser(tgID int64, username, firstName, lastName, langCode string, isBot, 
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
 		AgreedToTerms: false, // Default to false
+		IsAdmin:       false, // По умолчанию не является администратором
 	}
 }
