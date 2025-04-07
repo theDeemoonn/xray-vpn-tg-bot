@@ -116,7 +116,7 @@ func (b *Bot) mySubscriptionsHandler(ctx context.Context, bot *gobot.Bot, update
 	b.logger.InfoContext(ctx, "Handling 'My Subscriptions'", slog.String("user_id", user.ID.Hex()))
 
 	// Get all active subscriptions, for simplicity we'll display the first one if any
-	subs, err := b.subscriptionService.GetUserActiveSubscriptions(ctx, user.ID)
+	sub, err := b.subscriptionService.GetUserActiveSubscription(ctx, user.ID)
 	if err != nil {
 		// If it's not specifically ErrNotFound, it's an internal error
 		if !errors.Is(err, apperrors.ErrSubscriptionNotFound) {
@@ -125,14 +125,10 @@ func (b *Bot) mySubscriptionsHandler(ctx context.Context, bot *gobot.Bot, update
 			return
 		}
 	}
-	// If err is ErrSubscriptionNotFound or subs is empty, show no active subs message
-	if len(subs) == 0 {
+	if sub == nil {
 		b.sendUserMessage(ctx, bot, update.Message.Chat.ID, "У вас нет активных подписок. 🛒")
 		return
 	}
-
-	// Display the first active subscription found
-	sub := subs[0]
 
 	var msgText string
 	var replyMarkup models.ReplyMarkup
@@ -630,7 +626,7 @@ func (b *Bot) handleServerSelectionCallback(ctx context.Context, bot *gobot.Bot,
 	}
 
 	// Call the subscription service to configure the server for the subscription
-	err := b.subscriptionService.ConfigureSubscriptionServer(ctx, subID, serverID)
+	err := b.subscriptionService.ConfigureSubscriptionServer(ctx, user.ID, subID, serverID)
 	if err != nil {
 		// Handle specific errors from service
 		var appErr *apperrors.Error
