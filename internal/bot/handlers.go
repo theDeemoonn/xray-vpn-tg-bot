@@ -227,19 +227,17 @@ func (b *Bot) referralHandler(ctx context.Context, bot *gobot.Bot, update *model
 	_, _ = bot.SendMessage(ctx, params)
 }
 
-// faqHandler displays FAQ information.
+// faqHandler displays the FAQ category selection.
 func (b *Bot) faqHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
 	user := UserFromContext(ctx)
 	if user == nil {
 		b.sendUserError(ctx, bot, update.Message.Chat.ID, "Не удалось получить информацию о пользователе.")
 		return
 	}
-	b.logger.InfoContext(ctx, "Handling 'FAQ & Support'", slog.String("user_id", user.ID.Hex()))
-	params := &gobot.SendMessageParams{
-		ChatID: update.Message.Chat.ID,
-		Text:   "Раздел 'FAQ & Поддержка' в разработке.",
-	}
-	_, _ = bot.SendMessage(ctx, params)
+	b.logger.InfoContext(ctx, "Handling 'FAQ' button", slog.String("user_id", user.ID.Hex()))
+
+	// Show FAQ categories by sending a new message
+	b.showFAQCategories(ctx, bot, update.Message.Chat.ID, 0) // 0 for new message
 }
 
 // instructionHandler handles the "Instructions" button.
