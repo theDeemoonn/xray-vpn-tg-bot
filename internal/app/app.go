@@ -103,6 +103,15 @@ func New(ctx context.Context, logger *slog.Logger, cfg *config.Config) (*App, er
 		logger.Warn("Payment repository does not support EnsureIndexes method")
 	}
 	var paymentRepo repository.PaymentRepository = paymentMongoRepo
+
+	// Initialize FAQ and Instruction Repositories
+	faqMongoRepo := mongodb.NewFAQRepo(mongoDB, cfg.MongoDB.FaqColl, logger)
+	// No EnsureIndexes for FAQ repo currently
+	var faqRepo repository.FAQRepository = faqMongoRepo
+
+	instructionMongoRepo := mongodb.NewInstructionRepo(mongoDB, cfg.MongoDB.InstructionColl, logger)
+	// No EnsureIndexes for Instruction repo currently
+	var instructionRepo repository.InstructionRepository = instructionMongoRepo
 	logger.Info("Repositories initialized")
 
 	// --- Initialize Services ---
@@ -125,11 +134,15 @@ func New(ctx context.Context, logger *slog.Logger, cfg *config.Config) (*App, er
 	)
 	// Initialize Plan Service
 	planService := service.NewPlanService(planRepo, logger)
+
+	// Initialize FAQ and Instruction Services
+	faqService := service.NewFAQService(faqRepo, logger)
+	instructionService := service.NewInstructionService(instructionRepo, logger)
 	logger.Info("Services initialized")
 
 	// --- Initialize Telegram Bot ---
 	logger.Info("Initializing Telegram Bot...")
-	tgBot, err := bot.New(cfg, logger, userService, serverService, subscriptionService, paymentService, planService)
+	tgBot, err := bot.New(cfg, logger, userService, serverService, subscriptionService, paymentService, planService, faqService, instructionService)
 	if err != nil {
 		// Clean up MongoDB connection if bot fails to start
 		disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -29,6 +29,7 @@ type Telegram struct {
 	Token         string `yaml:"token" env:"TELEGRAM_TOKEN" env-required:"true"`
 	WebhookURL    string `yaml:"webhook_url" env:"TELEGRAM_WEBHOOK_URL"`                           // Если используем вебхуки
 	AdminID       int64  `yaml:"admin_id" env:"TELEGRAM_ADMIN_ID"`                                 // ID админа для уведомлений
+	AdminUsername string `yaml:"admin_username" env:"TELEGRAM_ADMIN_USERNAME"`                     // Username админа для связи (@username)
 	ProviderToken string `yaml:"provider_token" env:"TELEGRAM_PROVIDER_TOKEN" env-required:"true"` // Added for Telegram Payments
 }
 

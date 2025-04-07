@@ -12,13 +12,29 @@ import (
 const (
 	MainMenuButtonMySubscriptions = "🚀 Мои подписки"
 	MainMenuButtonBuySubscription = "🛒 Купить подписку"
-	MainMenuButtonReferral        = "🎁 Реферальная программа"
-	MainMenuButtonFAQ             = "❓ FAQ & Поддержка"
+	MainMenuButtonReferral        = "🎁 Реф. программа"
+	MainMenuButtonInstructions    = "📱 Инструкции"
+	MainMenuButtonFAQ             = "❓ FAQ"
+	MainMenuButtonSupport         = "💬 Поддержка"
 )
 
 // --- Дополнительные константы для клавиатур ---
 const (
-	callbackActionFAQ = "faq_"
+	callbackActionSupport = "support"
+
+	// Кнопки для главного меню FAQ/Инструкций
+	buttonTextFAQ          = "❓ Частые вопросы (FAQ)"
+	buttonTextInstructions = "📱 Инструкции по настройке"
+	buttonTextSupport      = "💬 Связаться с поддержкой"
+
+	// Префиксы callback data
+	callbackPrefixFAQCategory         = "faq_cat:"
+	callbackPrefixFAQQuestion         = "faq_q:"
+	callbackPrefixInstructionPlatform = "instr_plat:"
+	callbackPrefixInstructionDetails  = "instr_det:"
+	callbackPrefixBackToFAQ           = "back_faq"
+	callbackPrefixBackToInstructions  = "back_instr"
+	callbackPrefixBackToHelpRoot      = "back_help"
 )
 
 // mainMenuKeyboard возвращает основную клавиатуру меню
@@ -26,8 +42,9 @@ func mainMenuKeyboard() *models.ReplyKeyboardMarkup {
 	return &models.ReplyKeyboardMarkup{
 		ResizeKeyboard: true,
 		Keyboard: [][]models.KeyboardButton{
-			{{Text: "🚀 Мои подписки"}, {Text: "🛒 Купить подписку"}},
-			{{Text: "🎁 Реферальная программа"}, {Text: "❓ FAQ & Поддержка"}},
+			{{Text: MainMenuButtonMySubscriptions}, {Text: MainMenuButtonBuySubscription}},
+			{{Text: MainMenuButtonInstructions}, {Text: MainMenuButtonFAQ}},
+			{{Text: MainMenuButtonReferral}, {Text: MainMenuButtonSupport}},
 			// Add admin buttons here conditionally if needed
 		},
 	}
@@ -104,42 +121,116 @@ func createServerSelectionKeyboard(servers []*domain.Server, subscriptionID prim
 	}
 }
 
-// createFAQKeyboard создает inline клавиатуру для разделов FAQ
-func createFAQKeyboard() models.InlineKeyboardMarkup {
+// --- Клавиатуры для раздела "FAQ & Поддержка" --- //
+
+// createHelpRootKeyboard создает клавиатуру для главного экрана помощи
+func createHelpRootKeyboard() models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{
 				{
-					Text:         "📱 Как установить?",
-					CallbackData: "faq_install",
+					Text:         buttonTextInstructions,
+					CallbackData: callbackPrefixBackToInstructions, // Reuse for direct entry
 				},
 			},
 			{
 				{
-					Text:         "🔧 Решение проблем",
-					CallbackData: "faq_troubleshoot",
+					Text:         buttonTextFAQ,
+					CallbackData: callbackPrefixBackToFAQ, // Reuse for direct entry
 				},
 			},
 			{
 				{
-					Text:         "💬 Связаться с поддержкой",
-					CallbackData: "faq_support",
+					Text:         buttonTextSupport,
+					CallbackData: callbackActionSupport,
 				},
 			},
 		},
 	}
 }
 
-/* Example Inline Keyboard
-func (b *Bot) exampleInlineKeyboard() *telego.InlineKeyboardMarkup {
-	return tu.InlineKeyboardMarkup(
-		tu.InlineKeyboardRow(
-			tu.InlineKeyboardButton("Button 1").WithCallbackData("callback_data_1"),
-			tu.InlineKeyboardButton("Button 2").WithCallbackData("callback_data_2"),
-		),
-	)
+// createFAQCategoriesKeyboard создает клавиатуру для выбора категории FAQ
+func createFAQCategoriesKeyboard(categories []string) models.InlineKeyboardMarkup {
+	var buttons [][]models.InlineKeyboardButton
+	for _, category := range categories {
+		row := []models.InlineKeyboardButton{
+			{Text: category, CallbackData: fmt.Sprintf("%s%s", callbackPrefixFAQCategory, category)},
+		}
+		buttons = append(buttons, row)
+	}
+	// Добавляем кнопку "Назад"
+	buttons = append(buttons, createBackButtonRow(callbackPrefixBackToHelpRoot))
+	return models.InlineKeyboardMarkup{InlineKeyboard: buttons}
 }
-*/
+
+// createFAQQuestionsKeyboard создает клавиатуру для вопросов в категории FAQ
+func createFAQQuestionsKeyboard(faqs []*domain.FAQ, category string) models.InlineKeyboardMarkup {
+	var buttons [][]models.InlineKeyboardButton
+	for _, faq := range faqs {
+		row := []models.InlineKeyboardButton{
+			{Text: faq.Question, CallbackData: fmt.Sprintf("%s%s", callbackPrefixFAQQuestion, faq.ID.Hex())},
+		}
+		buttons = append(buttons, row)
+	}
+	// Добавляем кнопку "Назад" (к списку категорий)
+	buttons = append(buttons, createBackButtonRow(callbackPrefixBackToFAQ))
+	return models.InlineKeyboardMarkup{InlineKeyboard: buttons}
+}
+
+// createInstructionPlatformsKeyboard создает клавиатуру для выбора платформы инструкций
+func createInstructionPlatformsKeyboard(platforms []string) models.InlineKeyboardMarkup {
+	var buttons [][]models.InlineKeyboardButton
+	for _, platform := range platforms {
+		row := []models.InlineKeyboardButton{
+			{Text: platform, CallbackData: fmt.Sprintf("%s%s", callbackPrefixInstructionPlatform, platform)},
+		}
+		buttons = append(buttons, row)
+	}
+	// Добавляем кнопку "Назад"
+	buttons = append(buttons, createBackButtonRow(callbackPrefixBackToHelpRoot))
+	return models.InlineKeyboardMarkup{InlineKeyboard: buttons}
+}
+
+// createInstructionsListKeyboard создает клавиатуру для инструкций на платформе
+func createInstructionsListKeyboard(instructions []*domain.Instruction, platform string) models.InlineKeyboardMarkup {
+	var buttons [][]models.InlineKeyboardButton
+	for _, instruction := range instructions {
+		row := []models.InlineKeyboardButton{
+			{Text: instruction.Title, CallbackData: fmt.Sprintf("%s%s", callbackPrefixInstructionDetails, instruction.ID.Hex())},
+		}
+		buttons = append(buttons, row)
+	}
+	// Добавляем кнопку "Назад" (к списку платформ)
+	buttons = append(buttons, createBackButtonRow(callbackPrefixBackToInstructions))
+	return models.InlineKeyboardMarkup{InlineKeyboard: buttons}
+}
+
+// createBackToFAQKeyboard создает клавиатуру с кнопкой "Назад к FAQ"
+func createBackToFAQKeyboard() models.InlineKeyboardMarkup {
+	return models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			createBackButtonRow(callbackPrefixBackToFAQ),
+		},
+	}
+}
+
+// createBackToInstructionsKeyboard создает клавиатуру с кнопкой "Назад к инструкциям"
+func createBackToInstructionsKeyboard() models.InlineKeyboardMarkup {
+	return models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			createBackButtonRow(callbackPrefixBackToInstructions),
+		},
+	}
+}
+
+// --- Вспомогательные функции для клавиатур ---
+
+// createBackButtonRow создает ряд с кнопкой "Назад"
+func createBackButtonRow(callbackData string) []models.InlineKeyboardButton {
+	return []models.InlineKeyboardButton{
+		{Text: "⬅️ Назад", CallbackData: callbackData},
+	}
+}
 
 // --- Functions returning keyboards (if needed, e.g., for admin panel) ---
 

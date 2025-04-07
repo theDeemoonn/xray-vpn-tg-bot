@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"xray-vpn-tg-bot/internal/apperrors"
+	"xray-vpn-tg-bot/internal/domain"
 
 	gobot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -114,86 +115,90 @@ func (b *Bot) mySubscriptionsHandler(ctx context.Context, bot *gobot.Bot, update
 	}
 	b.logger.InfoContext(ctx, "Handling 'My Subscriptions'", slog.String("user_id", user.ID.Hex()))
 
-	sub, err := b.subscriptionService.GetUserActiveSubscription(ctx, user.ID)
+	// Get all active subscriptions, for simplicity we'll display the first one if any
+	subs, err := b.subscriptionService.GetUserActiveSubscriptions(ctx, user.ID)
 	if err != nil {
-		if errors.Is(err, apperrors.ErrSubscriptionNotFound) {
-			b.sendUserMessage(ctx, bot, update.Message.Chat.ID, "У вас нет активных подписок. 🛒")
+		// If it's not specifically ErrNotFound, it's an internal error
+		if !errors.Is(err, apperrors.ErrSubscriptionNotFound) {
+			b.logger.ErrorContext(ctx, "Failed to get active subscription for user", slog.String("user_id", user.ID.Hex()), slog.Any("error", err))
+			b.sendInternalError(ctx, bot, update.Message.Chat.ID)
 			return
 		}
-		b.logger.ErrorContext(ctx, "Failed to get active subscription for user", slog.String("user_id", user.ID.Hex()), slog.Any("error", err))
-		b.sendInternalError(ctx, bot, update.Message.Chat.ID)
+	}
+	// If err is ErrSubscriptionNotFound or subs is empty, show no active subs message
+	if len(subs) == 0 {
+		b.sendUserMessage(ctx, bot, update.Message.Chat.ID, "У вас нет активных подписок. 🛒")
 		return
 	}
+
+	// Display the first active subscription found
+	sub := subs[0]
 
 	var msgText string
 	var replyMarkup models.ReplyMarkup
 
-	if sub == nil {
-		msgText = "У вас нет активных подписок. 🛒"
+	// Fetch plan details to show name
+	plan, planErr := b.planService.GetPlanByID(ctx, sub.PlanID)
+	planName := "Неизвестный план"
+	if planErr == nil && plan != nil {
+		planName = plan.Name
 	} else {
-		// Fetch plan details to show name
-		plan, planErr := b.planService.GetPlanByID(ctx, sub.PlanID)
-		planName := "Неизвестный план"
-		if planErr == nil && plan != nil {
-			planName = plan.Name
-		} else {
-			b.logger.WarnContext(ctx, "Failed to get plan details for active subscription display", slog.String("sub_id", sub.ID.Hex()), slog.String("plan_id", sub.PlanID.Hex()), slog.Any("error", planErr))
-		}
+		b.logger.WarnContext(ctx, "Failed to get plan details for active subscription display", slog.String("sub_id", sub.ID.Hex()), slog.String("plan_id", sub.PlanID.Hex()), slog.Any("error", planErr))
+	}
 
-		// Format expiry date (adjust locale/format as needed)
-		loc, _ := time.LoadLocation("Europe/Moscow") // Example: Moscow timezone
-		expiryStr := sub.ExpiresAt.In(loc).Format("02.01.2006 15:04 MST")
+	// Format expiry date (adjust locale/format as needed)
+	loc, _ := time.LoadLocation("Europe/Moscow") // Example: Moscow timezone
+	expiryStr := sub.ExpiresAt.In(loc).Format("02.01.2006 15:04 MST")
 
-		// Format traffic usage/limit (convert bytes to GB)
-		trafficLimitStr := "Безлимитно ∞"
-		if sub.TrafficLimit > 0 {
-			trafficLimitStr = fmt.Sprintf("%.2f GB", float64(sub.TrafficLimit)/(1024*1024*1024))
-		}
-		trafficUsedStr := fmt.Sprintf("%.2f GB", float64(sub.TrafficUsed)/(1024*1024*1024))
+	// Format traffic usage/limit (convert bytes to GB)
+	trafficLimitStr := "Безлимитно ∞"
+	if sub.TrafficLimit > 0 {
+		trafficLimitStr = fmt.Sprintf("%.2f GB", float64(sub.TrafficLimit)/(1024*1024*1024))
+	}
+	trafficUsedStr := fmt.Sprintf("%.2f GB", float64(sub.TrafficUsed)/(1024*1024*1024))
 
-		// Build message text without manual MarkdownV2 escapes inside
-		msgTextFormat := `✨ *Ваша активная подписка:*` +
-			`
+	// Build message text without manual MarkdownV2 escapes inside
+	msgTextFormat := `✨ *Ваша активная подписка:*` +
+		`
 План: *%s*` +
-			`
+		`
 Истекает: *%s*` +
-			`
+		`
 
 Трафик (исп./лимит): *%s* / *%s*` +
-			`
+		`
 Статус: *%s*`
 
-		// Add button based on whether server is configured
-		if !sub.ServerID.IsZero() {
-			// Server is configured - show Get Config button
-			inlineKeyboard := [][]models.InlineKeyboardButton{{ // Correct structure
-				{
-					Text:         "🔗 Получить конфигурацию",
-					CallbackData: callbackActionGetConfig + sub.ID.Hex(),
-				},
-			}}
-			replyMarkup = models.InlineKeyboardMarkup{InlineKeyboard: inlineKeyboard}
-			msgTextFormat += "\n\nНажмите кнопку ниже, чтобы получить конфигурацию."
-		} else {
-			// Server is NOT configured - show Configure Server button
-			inlineKeyboard := [][]models.InlineKeyboardButton{{ // Correct structure
-				{
-					Text:         "⚙️ Настроить сервер",
-					CallbackData: callbackActionSelectServer + sub.ID.Hex(), // Use sub ID
-				},
-			}}
-			replyMarkup = models.InlineKeyboardMarkup{InlineKeyboard: inlineKeyboard}
-			msgTextFormat += "\n\n_Подписка активна, но еще не настроена. Нажмите кнопку ниже, чтобы выбрать сервер._"
-		}
-
-		msgText = fmt.Sprintf(msgTextFormat,
-			planName,                    // Assuming planName is already escaped or safe
-			expiryStr,                   // Assuming expiryStr is safe
-			trafficUsedStr,              // Assuming trafficUsedStr is safe
-			trafficLimitStr,             // Assuming trafficLimitStr is safe
-			translateStatus(sub.Status), // Assuming translateStatus is safe - lives in helpers.go
-		)
+	// Add button based on whether server is configured
+	if !sub.ServerID.IsZero() {
+		// Server is configured - show Get Config button
+		inlineKeyboard := [][]models.InlineKeyboardButton{{ // Correct structure
+			{
+				Text:         "🔗 Получить конфигурацию",
+				CallbackData: callbackActionGetConfig + sub.ID.Hex(),
+			},
+		}}
+		replyMarkup = models.InlineKeyboardMarkup{InlineKeyboard: inlineKeyboard}
+		msgTextFormat += "\n\nНажмите кнопку ниже, чтобы получить конфигурацию."
+	} else {
+		// Server is NOT configured - show Configure Server button
+		inlineKeyboard := [][]models.InlineKeyboardButton{{ // Correct structure
+			{
+				Text:         "⚙️ Настроить сервер",
+				CallbackData: callbackActionSelectServer + sub.ID.Hex(), // Use sub ID
+			},
+		}}
+		replyMarkup = models.InlineKeyboardMarkup{InlineKeyboard: inlineKeyboard}
+		msgTextFormat += "\n\n_Подписка активна, но еще не настроена. Нажмите кнопку ниже, чтобы выбрать сервер._"
 	}
+
+	msgText = fmt.Sprintf(msgTextFormat,
+		planName,                    // Assuming planName is already escaped or safe
+		expiryStr,                   // Assuming expiryStr is safe
+		trafficUsedStr,              // Assuming trafficUsedStr is safe
+		trafficLimitStr,             // Assuming trafficLimitStr is safe
+		translateStatus(sub.Status), // Assuming translateStatus is safe - lives in helpers.go
+	)
 
 	// Escape the final message text for MarkdownV2
 	escapedMsgText := escapeMarkdownV2(msgText) // Assuming escapeMarkdownV2 lives in helpers.go
@@ -237,6 +242,45 @@ func (b *Bot) faqHandler(ctx context.Context, bot *gobot.Bot, update *models.Upd
 	params := &gobot.SendMessageParams{
 		ChatID: update.Message.Chat.ID,
 		Text:   "Раздел 'FAQ & Поддержка' в разработке.",
+	}
+	_, _ = bot.SendMessage(ctx, params)
+}
+
+// instructionHandler handles the "Instructions" button.
+func (b *Bot) instructionHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	user := UserFromContext(ctx)
+	if user == nil {
+		b.sendUserError(ctx, bot, update.Message.Chat.ID, "Не удалось получить информацию о пользователе.")
+		return
+	}
+	b.logger.InfoContext(ctx, "Handling 'Instructions' button", slog.String("user_id", user.ID.Hex()))
+
+	// Directly show platform selection
+	b.showInstructionPlatforms(ctx, bot, update.Message.Chat.ID, 0) // 0 for new message
+}
+
+// supportHandler handles the "Support" button.
+func (b *Bot) supportHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	user := UserFromContext(ctx)
+	if user == nil {
+		b.sendUserError(ctx, bot, update.Message.Chat.ID, "Не удалось получить информацию о пользователе.")
+		return
+	}
+	b.logger.InfoContext(ctx, "Handling 'Support' button", slog.String("user_id", user.ID.Hex()))
+
+	adminUsername := b.cfg.Telegram.AdminUsername
+	msgText := "Для связи с поддержкой напишите администратору."
+	if adminUsername != "" {
+		msgText = fmt.Sprintf("Для связи с поддержкой напишите администратору: @%s", adminUsername)
+	} else if b.cfg.Telegram.AdminID != 0 {
+		// Fallback if username is not set but ID is
+		msgText = fmt.Sprintf("Для связи с поддержкой напишите администратору (ID: %d). К сожалению, имя пользователя не указано.", b.cfg.Telegram.AdminID)
+	}
+
+	params := &gobot.SendMessageParams{
+		ChatID:    update.Message.Chat.ID,
+		Text:      escapeMarkdownV2(msgText), // Escape potential special chars
+		ParseMode: "MarkdownV2",
 	}
 	_, _ = bot.SendMessage(ctx, params)
 }
@@ -585,8 +629,8 @@ func (b *Bot) handleServerSelectionCallback(ctx context.Context, bot *gobot.Bot,
 		return
 	}
 
-	// Configure the subscription
-	err := b.subscriptionService.ConfigureSubscriptionServer(ctx, user.ID, subID, serverID)
+	// Call the subscription service to configure the server for the subscription
+	err := b.subscriptionService.ConfigureSubscriptionServer(ctx, subID, serverID)
 	if err != nil {
 		// Handle specific errors from service
 		var appErr *apperrors.Error
@@ -650,6 +694,248 @@ func (b *Bot) handleServerSelectionCallback(ctx context.Context, bot *gobot.Bot,
 
 	// Answer callback query
 	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID, Text: "Сервер настроен!"})
+}
+
+// --- FAQ & Instruction Callback Handlers --- //
+
+// handleBackToFAQCallback handles the "Back to FAQ" button press (shows categories)
+func (b *Bot) handleBackToFAQCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	chatID := update.CallbackQuery.Message.Message.Chat.ID
+	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	b.logger.DebugContext(ctx, "Handling back to FAQ callback", slog.Int64("chat_id", chatID))
+	b.showFAQCategories(ctx, bot, chatID, messageID)
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+}
+
+// handleBackToInstructionsCallback handles the "Back to Instructions" button press (shows platforms)
+func (b *Bot) handleBackToInstructionsCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	chatID := update.CallbackQuery.Message.Message.Chat.ID
+	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	b.logger.DebugContext(ctx, "Handling back to Instructions callback", slog.Int64("chat_id", chatID))
+	b.showInstructionPlatforms(ctx, bot, chatID, messageID)
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+}
+
+// handleBackToHelpRootCallback handles the "Back" button press from category/platform lists
+func (b *Bot) handleBackToHelpRootCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	chatID := update.CallbackQuery.Message.Message.Chat.ID
+	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	b.logger.DebugContext(ctx, "Handling back to help root callback", slog.Int64("chat_id", chatID))
+
+	params := &gobot.EditMessageTextParams{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        "Выберите нужный раздел:",
+		ReplyMarkup: createHelpRootKeyboard(),
+	}
+	_, err := bot.EditMessageText(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to edit message for help root", slog.Any("error", err))
+	}
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+}
+
+// handleFAQCategoryCallback handles selection of an FAQ category.
+func (b *Bot) handleFAQCategoryCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	chatID := update.CallbackQuery.Message.Message.Chat.ID
+	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	callbackData := update.CallbackQuery.Data
+	category := strings.TrimPrefix(callbackData, callbackPrefixFAQCategory)
+
+	b.logger.InfoContext(ctx, "Handling FAQ category selection", slog.Int64("chat_id", chatID), slog.String("category", category))
+
+	faqs, err := b.faqService.GetQuestionsByCategory(ctx, category)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to get FAQs for category", slog.String("category", category), slog.Any("error", err))
+		b.sendUserError(ctx, bot, chatID, "Не удалось загрузить вопросы для этой категории.")
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+		return
+	}
+
+	if len(faqs) == 0 {
+		// Edit the message to indicate no questions, keep the back button
+		params := &gobot.EditMessageTextParams{
+			ChatID:      chatID,
+			MessageID:   messageID,
+			Text:        fmt.Sprintf("В категории '%s' пока нет вопросов.", escapeMarkdownV2(category)),
+			ReplyMarkup: createFAQCategoriesKeyboard([]string{}), // Pass empty slice to just get back button
+			ParseMode:   "MarkdownV2",
+		}
+		_, editErr := bot.EditMessageText(ctx, params)
+		if editErr != nil {
+			b.logger.ErrorContext(ctx, "Failed to edit message for empty FAQ category", slog.String("category", category), slog.Any("error", editErr))
+		}
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+		return
+	}
+
+	keyboard := createFAQQuestionsKeyboard(faqs, category)
+	params := &gobot.EditMessageTextParams{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        fmt.Sprintf("Выберите вопрос из категории '%s':", escapeMarkdownV2(category)),
+		ReplyMarkup: keyboard,
+		ParseMode:   "MarkdownV2",
+	}
+
+	_, err = bot.EditMessageText(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to edit message for FAQ questions", slog.String("category", category), slog.Any("error", err))
+	}
+
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+}
+
+// handleFAQQuestionCallback handles selection of a specific FAQ question.
+func (b *Bot) handleFAQQuestionCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	chatID := update.CallbackQuery.Message.Message.Chat.ID
+	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	callbackData := update.CallbackQuery.Data
+	faqIDHex := strings.TrimPrefix(callbackData, callbackPrefixFAQQuestion)
+
+	b.logger.InfoContext(ctx, "Handling FAQ question selection", slog.Int64("chat_id", chatID), slog.String("faq_id", faqIDHex))
+
+	faqID, err := primitive.ObjectIDFromHex(faqIDHex)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Invalid FAQ ID in callback", slog.String("faq_id_hex", faqIDHex), slog.Any("error", err))
+		b.sendUserError(ctx, bot, chatID, "Неверный ID вопроса.")
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+		return
+	}
+
+	faq, err := b.faqService.GetAnswer(ctx, faqID)
+	if err != nil {
+		// Handle not found specifically?
+		b.logger.ErrorContext(ctx, "Failed to get FAQ answer", slog.String("faq_id", faqIDHex), slog.Any("error", err))
+		b.sendUserError(ctx, bot, chatID, "Не удалось загрузить ответ на вопрос.")
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+		return
+	}
+
+	// Format the response (assuming MarkdownV2 is safe in Answer)
+	msgText := fmt.Sprintf("*❓ %s*\n\n%s", escapeMarkdownV2(faq.Question), escapeMarkdownV2(faq.Answer))
+
+	// Pass the category back to the keyboard function if needed for the back button logic
+	// Assuming GetAnswer returns the full FAQ object including category
+	keyboard := createFAQQuestionsKeyboard([]*domain.FAQ{faq}, faq.Category) // Re-use keyboard func, pass current faq and its category
+	backButtonRow := createBackButtonRow(callbackPrefixBackToFAQ)            // Get the standard back button
+	keyboard.InlineKeyboard[len(keyboard.InlineKeyboard)-1] = backButtonRow  // Ensure the last row is the back button to categories
+
+	params := &gobot.EditMessageTextParams{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        msgText,
+		ReplyMarkup: keyboard,
+		ParseMode:   "MarkdownV2",
+	}
+
+	_, err = bot.EditMessageText(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to edit message for FAQ answer", slog.String("faq_id", faqIDHex), slog.Any("error", err))
+	}
+
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+}
+
+// handleInstructionPlatformCallback handles selection of an instruction platform.
+func (b *Bot) handleInstructionPlatformCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	chatID := update.CallbackQuery.Message.Message.Chat.ID
+	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	callbackData := update.CallbackQuery.Data
+	platform := strings.TrimPrefix(callbackData, callbackPrefixInstructionPlatform)
+
+	b.logger.InfoContext(ctx, "Handling instruction platform selection", slog.Int64("chat_id", chatID), slog.String("platform", platform))
+
+	instructions, err := b.instructionService.GetInstructionsByPlatform(ctx, platform)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to get instructions for platform", slog.String("platform", platform), slog.Any("error", err))
+		b.sendUserError(ctx, bot, chatID, "Не удалось загрузить инструкции для этой платформы.")
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+		return
+	}
+
+	if len(instructions) == 0 {
+		// Edit the message to indicate no instructions, keep the back button
+		params := &gobot.EditMessageTextParams{
+			ChatID:      chatID,
+			MessageID:   messageID,
+			Text:        fmt.Sprintf("Для платформы '%s' пока нет инструкций.", escapeMarkdownV2(platform)),
+			ReplyMarkup: createInstructionPlatformsKeyboard([]string{}), // Pass empty slice to just get back button
+			ParseMode:   "MarkdownV2",
+		}
+		_, editErr := bot.EditMessageText(ctx, params)
+		if editErr != nil {
+			b.logger.ErrorContext(ctx, "Failed to edit message for empty instruction platform", slog.String("platform", platform), slog.Any("error", editErr))
+		}
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+		return
+	}
+
+	keyboard := createInstructionsListKeyboard(instructions, platform)
+	params := &gobot.EditMessageTextParams{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        fmt.Sprintf("Выберите инструкцию для '%s':", escapeMarkdownV2(platform)),
+		ReplyMarkup: keyboard,
+		ParseMode:   "MarkdownV2",
+	}
+
+	_, err = bot.EditMessageText(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to edit message for instruction list", slog.String("platform", platform), slog.Any("error", err))
+	}
+
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+}
+
+// handleInstructionDetailsCallback handles selection of a specific instruction.
+func (b *Bot) handleInstructionDetailsCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	chatID := update.CallbackQuery.Message.Message.Chat.ID
+	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	callbackData := update.CallbackQuery.Data
+	instructionIDHex := strings.TrimPrefix(callbackData, callbackPrefixInstructionDetails)
+
+	b.logger.InfoContext(ctx, "Handling instruction details selection", slog.Int64("chat_id", chatID), slog.String("instruction_id", instructionIDHex))
+
+	instructionID, err := primitive.ObjectIDFromHex(instructionIDHex)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Invalid instruction ID in callback", slog.String("instruction_id_hex", instructionIDHex), slog.Any("error", err))
+		b.sendUserError(ctx, bot, chatID, "Неверный ID инструкции.")
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+		return
+	}
+
+	instruction, err := b.instructionService.GetInstructionDetails(ctx, instructionID)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to get instruction details", slog.String("instruction_id", instructionIDHex), slog.Any("error", err))
+		b.sendUserError(ctx, bot, chatID, "Не удалось загрузить инструкцию.")
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+		return
+	}
+
+	// Format the response (assuming MarkdownV2 is safe in Content)
+	msgText := fmt.Sprintf("*📱 %s* (%s)\n\n%s", escapeMarkdownV2(instruction.Title), escapeMarkdownV2(instruction.Platform), escapeMarkdownV2(instruction.Content))
+
+	// Pass the platform back to the keyboard function if needed for the back button logic
+	keyboard := createInstructionsListKeyboard([]*domain.Instruction{instruction}, instruction.Platform) // Re-use keyboard func
+	backButtonRow := createBackButtonRow(callbackPrefixBackToInstructions)                               // Get the standard back button
+	keyboard.InlineKeyboard[len(keyboard.InlineKeyboard)-1] = backButtonRow                              // Ensure last row is back button to platforms
+
+	params := &gobot.EditMessageTextParams{
+		ChatID:      chatID,
+		MessageID:   messageID,
+		Text:        msgText,
+		ReplyMarkup: keyboard,
+		ParseMode:   "MarkdownV2",
+		// DisableWebPagePreview: true, // Consider if Content might contain links
+	}
+
+	_, err = bot.EditMessageText(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to edit message for instruction details", slog.String("instruction_id", instructionIDHex), slog.Any("error", err))
+	}
+
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
 }
 
 // --- Update Handlers (Default, PreCheckout, SuccessfulPayment) ---
@@ -789,4 +1075,92 @@ func (b *Bot) successfulPaymentHandler(ctx context.Context, bot *gobot.Bot, upda
 	// Send success message to the user
 	b.logger.InfoContext(ctx, "Payment processed and subscription activation triggered successfully", slog.String("payload", payload))
 	b.sendUserMessage(ctx, bot, chatID, "✅ Оплата прошла успешно! Ваша подписка активирована (или продлена). Проверьте раздел 'Мои подписки'.")
+}
+
+// --- Вспомогательные функции для FAQ/Инструкций --- //
+
+// showFAQCategories отправляет или редактирует сообщение со списком категорий FAQ
+func (b *Bot) showFAQCategories(ctx context.Context, bot *gobot.Bot, chatID int64, messageID int) {
+	categories, err := b.faqService.GetCategories(ctx)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to get FAQ categories", slog.Any("error", err))
+		b.sendUserError(ctx, bot, chatID, "Не удалось загрузить категории FAQ.")
+		return
+	}
+
+	if len(categories) == 0 {
+		b.sendUserMessage(ctx, bot, chatID, "Раздел FAQ пока пуст.")
+		return
+	}
+
+	keyboard := createFAQCategoriesKeyboard(categories)
+	text := "Выберите категорию вопроса:"
+
+	if messageID != 0 {
+		// Edit existing message
+		params := &gobot.EditMessageTextParams{
+			ChatID:      chatID,
+			MessageID:   messageID,
+			Text:        text,
+			ReplyMarkup: keyboard,
+		}
+		_, err = bot.EditMessageText(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to edit message for FAQ categories", slog.Any("error", err))
+		}
+	} else {
+		// Send new message
+		params := &gobot.SendMessageParams{
+			ChatID:      chatID,
+			Text:        text,
+			ReplyMarkup: keyboard,
+		}
+		_, err = bot.SendMessage(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send message for FAQ categories", slog.Any("error", err))
+		}
+	}
+}
+
+// showInstructionPlatforms отправляет или редактирует сообщение со списком платформ инструкций
+func (b *Bot) showInstructionPlatforms(ctx context.Context, bot *gobot.Bot, chatID int64, messageID int) {
+	platforms, err := b.instructionService.GetPlatforms(ctx)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to get instruction platforms", slog.Any("error", err))
+		b.sendUserError(ctx, bot, chatID, "Не удалось загрузить платформы инструкций.")
+		return
+	}
+
+	if len(platforms) == 0 {
+		b.sendUserMessage(ctx, bot, chatID, "Раздел инструкций пока пуст.")
+		return
+	}
+
+	keyboard := createInstructionPlatformsKeyboard(platforms)
+	text := "Выберите платформу для настройки:"
+
+	if messageID != 0 {
+		// Edit existing message
+		params := &gobot.EditMessageTextParams{
+			ChatID:      chatID,
+			MessageID:   messageID,
+			Text:        text,
+			ReplyMarkup: keyboard,
+		}
+		_, err = bot.EditMessageText(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to edit message for instruction platforms", slog.Any("error", err))
+		}
+	} else {
+		// Send new message
+		params := &gobot.SendMessageParams{
+			ChatID:      chatID,
+			Text:        text,
+			ReplyMarkup: keyboard,
+		}
+		_, err = bot.SendMessage(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send message for instruction platforms", slog.Any("error", err))
+		}
+	}
 }

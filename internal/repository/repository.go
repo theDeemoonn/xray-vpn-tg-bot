@@ -67,4 +67,20 @@ type PaymentRepository interface {
 	// Add other methods if needed (e.g., ListByUserID)
 }
 
+// FAQRepository defines the interface for FAQ data storage operations.
+type FAQRepository interface {
+	GetAllActiveCategories(ctx context.Context) ([]string, error)
+	GetActiveByCategory(ctx context.Context, category string) ([]*domain.FAQ, error)
+	GetByID(ctx context.Context, id primitive.ObjectID) (*domain.FAQ, error) // Optional, might be useful
+	// Add Admin methods later if needed (Create, Update, Delete)
+}
+
+// InstructionRepository defines the interface for instruction data storage operations.
+type InstructionRepository interface {
+	GetAllActivePlatforms(ctx context.Context) ([]string, error)
+	GetActiveByPlatform(ctx context.Context, platform string) ([]*domain.Instruction, error)
+	GetByID(ctx context.Context, id primitive.ObjectID) (*domain.Instruction, error) // Optional
+	// Add Admin methods later if needed
+}
+
 // Add interfaces for other repositories (ReferralRepository, etc.) here

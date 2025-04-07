@@ -10,16 +10,21 @@ import (
 
 	gobot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-	// Removed unused imports like errors, strings, time, repository, domain, qrcode, primitive
 )
 
 // Callback action prefixes
 const (
-	callbackActionSelectPlan      = "plan_id:"
-	callbackActionGetConfig       = "get_config:"
-	callbackActionSelectServer    = "select_srv:"
-	callbackActionConfigureServer = "config_srv:"
-	callbackActionConfirmServer   = "confirm_srv_"
+	callbackActionSelectPlan          = "plan_id:"
+	callbackActionGetConfig           = "get_config:"
+	callbackActionSelectServer        = "select_srv:"
+	callbackActionConfigureServer     = "config_srv:"
+	callbackActionConfirmServer       = "confirm_srv_"
+	callbackActionFAQCategory         = "faq_category:"
+	callbackActionFAQQuestion         = "faq_question:"
+	callbackActionInstructionPlatform = "instruction_platform:"
+	callbackActionInstructionDetails  = "instruction_details:"
+	callbackActionBackToFAQ           = "back_to_faq"
+	callbackActionBackToInstructions  = "back_to_instructions"
 )
 
 // Bot represents the Telegram bot application using go-telegram/bot
@@ -32,6 +37,8 @@ type Bot struct {
 	subscriptionService service.SubscriptionService
 	paymentService      service.PaymentService
 	planService         service.PlanService
+	faqService          service.FAQService
+	instructionService  service.InstructionService
 }
 
 // New creates and initializes a new Bot instance.
@@ -43,6 +50,8 @@ func New(
 	subscriptionService service.SubscriptionService,
 	paymentService service.PaymentService,
 	planService service.PlanService,
+	faqService service.FAQService,
+	instructionService service.InstructionService,
 ) (*Bot, error) {
 	b := &Bot{
 		cfg:                 cfg,
@@ -52,6 +61,8 @@ func New(
 		subscriptionService: subscriptionService,
 		paymentService:      paymentService,
 		planService:         planService,
+		faqService:          faqService,
+		instructionService:  instructionService,
 	}
 
 	opts := []gobot.Option{
@@ -67,16 +78,26 @@ func New(
 
 	// Register command and text handlers (defined in handlers.go)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/start", gobot.MatchTypeExact, b.startHandler)
-	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "🚀 Мои подписки", gobot.MatchTypeExact, b.mySubscriptionsHandler)
-	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "🛒 Купить подписку", gobot.MatchTypeExact, b.buySubscriptionHandler)
-	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "🎁 Реферальная программа", gobot.MatchTypeExact, b.referralHandler)
-	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "❓ FAQ & Поддержка", gobot.MatchTypeExact, b.faqHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonMySubscriptions, gobot.MatchTypeExact, b.mySubscriptionsHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonBuySubscription, gobot.MatchTypeExact, b.buySubscriptionHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonReferral, gobot.MatchTypeExact, b.referralHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonInstructions, gobot.MatchTypeExact, b.instructionHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonFAQ, gobot.MatchTypeExact, b.faqHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonSupport, gobot.MatchTypeExact, b.supportHandler)
 
 	// Register callback query handlers (defined in handlers.go)
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionSelectPlan, gobot.MatchTypePrefix, b.handlePlanSelectionCallback)
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionGetConfig, gobot.MatchTypePrefix, b.handleGetConfigCallback)
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionSelectServer, gobot.MatchTypePrefix, b.handleSelectServerCallback)
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionConfigureServer, gobot.MatchTypePrefix, b.handleServerSelectionCallback)
+
+	// Register new FAQ/Instruction callback handlers
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionFAQCategory, gobot.MatchTypePrefix, b.handleFAQCategoryCallback)
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionFAQQuestion, gobot.MatchTypePrefix, b.handleFAQQuestionCallback)
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionInstructionPlatform, gobot.MatchTypePrefix, b.handleInstructionPlatformCallback)
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionInstructionDetails, gobot.MatchTypePrefix, b.handleInstructionDetailsCallback)
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionBackToFAQ, gobot.MatchTypeExact, b.handleBackToFAQCallback)
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionBackToInstructions, gobot.MatchTypeExact, b.handleBackToInstructionsCallback)
 
 	// Note: PreCheckoutQuery and SuccessfulPayment are handled within the defaultHandler
 
