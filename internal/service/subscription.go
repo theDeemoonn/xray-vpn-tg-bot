@@ -74,12 +74,6 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 		return err
 	}
 
-	durationDays := int(plan.Duration.Hours() / 24)
-	if durationDays <= 0 {
-		s.logger.WarnContext(ctx, "Plan duration is zero or negative, defaulting to 1 day", slog.String("plan_id", planID.Hex()), slog.Duration("duration", plan.Duration))
-		durationDays = 1
-	}
-
 	existingSub, err := s.subRepo.GetActiveByUserID(ctx, userID)
 	if err != nil && !errors.Is(err, apperrors.ErrSubscriptionNotFound) {
 		s.logger.ErrorContext(ctx, "Failed to check for existing subscription during activation", slog.String("user_id", userID.Hex()), slog.Any("error", err))
@@ -87,11 +81,11 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 	}
 
 	now := time.Now()
-	newExpiryDate := now.AddDate(0, 0, durationDays)
+	newExpiryDate := now.Add(plan.Duration)
 
 	if existingSub != nil {
 		if existingSub.Status == domain.SubscriptionStatusActive && existingSub.ExpiresAt.After(now) {
-			newExpiryDate = existingSub.ExpiresAt.AddDate(0, 0, durationDays)
+			newExpiryDate = existingSub.ExpiresAt.Add(plan.Duration)
 			s.logger.InfoContext(ctx, "Extending existing active subscription DB record", slog.String("user_id", userID.Hex()), slog.String("sub_id", existingSub.ID.Hex()), slog.Time("old_expiry", existingSub.ExpiresAt), slog.Time("new_expiry", newExpiryDate))
 		} else {
 			s.logger.InfoContext(ctx, "Reactivating/overwriting existing subscription DB record", slog.String("user_id", userID.Hex()), slog.String("sub_id", existingSub.ID.Hex()), slog.Time("new_expiry", newExpiryDate))
@@ -141,10 +135,7 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 	}
 
 	// --- Configure server and X-UI client ---
-	var subToConfigure *domain.Subscription
-	if existingSub != nil {
-		subToConfigure = existingSub
-	}
+	subToConfigure := existingSub
 
 	// Check if already configured (e.g., during renewal, we don't reconfigure)
 	if subToConfigure.ServerID.IsZero() {

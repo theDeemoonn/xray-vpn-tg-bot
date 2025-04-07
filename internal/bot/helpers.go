@@ -100,9 +100,9 @@ func UserFromContext(ctx context.Context) *domain.User {
 	return nil
 }
 
-// escapeMarkdownV2 escapes characters reserved by MarkdownV2.
+// escapeMarkdownV2 экранирует символы, зарезервированные в MarkdownV2.
 func escapeMarkdownV2(s string) string {
-	// List of characters to escape
+	// Полный список символов, которые нужно экранировать в MarkdownV2
 	chars := []string{"_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"}
 	for _, char := range chars {
 		s = strings.ReplaceAll(s, char, "\\"+char)

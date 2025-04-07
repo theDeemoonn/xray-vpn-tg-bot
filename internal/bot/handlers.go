@@ -289,7 +289,7 @@ func (b *Bot) supportHandler(ctx context.Context, bot *gobot.Bot, update *models
 		msgText = fmt.Sprintf("Для связи с поддержкой напишите администратору: @%s", adminUsername)
 	} else if b.cfg.Telegram.AdminID != 0 {
 		// Fallback if username is not set but ID is
-		msgText = fmt.Sprintf("Для связи с поддержкой напишите администратору (ID: %d). К сожалению, имя пользователя не указано.", b.cfg.Telegram.AdminID)
+		msgText = fmt.Sprintf("Для связи с поддержкой напишите администратору ID: %d. К сожалению, имя пользователя не указано.", b.cfg.Telegram.AdminID)
 	}
 
 	params := &gobot.SendMessageParams{
@@ -934,7 +934,7 @@ func (b *Bot) handleInstructionDetailsCallback(ctx context.Context, bot *gobot.B
 	}
 
 	// Format the response (assuming MarkdownV2 is safe in Content)
-	msgText := fmt.Sprintf("*📱 %s* (%s)\n\n%s", escapeMarkdownV2(instruction.Title), escapeMarkdownV2(instruction.Platform), escapeMarkdownV2(instruction.Content))
+	msgText := fmt.Sprintf("*📱 %s*\n*Платформа:* %s\n\n%s", escapeMarkdownV2(instruction.Title), escapeMarkdownV2(instruction.Platform), escapeMarkdownV2(instruction.Content))
 
 	// Pass the platform back to the keyboard function if needed for the back button logic
 	keyboard := createInstructionsListKeyboard([]*domain.Instruction{instruction}, instruction.Platform) // Re-use keyboard func
@@ -1124,7 +1124,13 @@ func (b *Bot) successfulPaymentHandler(ctx context.Context, bot *gobot.Bot, upda
 
 	// Send success message to the user
 	b.logger.InfoContext(ctx, "Payment processed and subscription activation triggered successfully", slog.String("payload", payload))
-	b.sendUserMessage(ctx, bot, chatID, "✅ Оплата прошла успешно! Ваша подписка активирована (или продлена). Проверьте раздел 'Мои подписки'.")
+	// Modify the success message to include a warning about potential reconfiguration need
+	successMsg := "✅ Оплата прошла успешно! Ваша подписка активирована (или продлена). " +
+		"Проверьте раздел \"Мои подписки\"."
+	// Add a note about potential server reconfiguration need
+	successMsg += "\n\n⚠️ *Важно:* Если ваша подписка была продлена, возможно, потребуется заново выбрать сервер в разделе \"Мои подписки\", даже если он уже был настроен."
+
+	b.sendUserMessage(ctx, bot, chatID, successMsg)
 }
 
 // --- Вспомогательные функции для FAQ/Инструкций --- //
