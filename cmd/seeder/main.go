@@ -119,13 +119,79 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 	now := time.Now()
 	plans := []domain.Plan{
 		{
+			Name:      "Стандарт 1 час",
+			Price:     70.00,
+			Currency:  "RUB",
+			Duration:  time.Hour * 1, // 1 час
+			TrafficGB: 5,             // 5 GB Limit
+			IsActive:  true,
+			SortOrder: 1,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			Name:      "Стандарт 3 часа",
+			Price:     85.00,
+			Currency:  "RUB",
+			Duration:  time.Hour * 3, // 3 часа
+			TrafficGB: 10,            // 10 GB Limit
+			IsActive:  true,
+			SortOrder: 2,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			Name:      "Стандарт 12 часов",
+			Price:     100.00,
+			Currency:  "RUB",
+			Duration:  time.Hour * 12, // 12 часов
+			TrafficGB: 20,             // 20 GB Limit
+			IsActive:  true,
+			SortOrder: 3,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			Name:      "Стандарт 1 день",
+			Price:     80.00,
+			Currency:  "RUB",
+			Duration:  time.Hour * 24, // 1 день
+			TrafficGB: 30,             // 30 GB Limit
+			IsActive:  true,
+			SortOrder: 4,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			Name:      "Безлимит 1 день",
+			Price:     120.00,
+			Currency:  "RUB",
+			Duration:  time.Hour * 24, // 1 день
+			TrafficGB: 0,              // Unlimited
+			IsActive:  true,
+			SortOrder: 5,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			Name:      "Стандарт 1 неделя",
+			Price:     100.00,
+			Currency:  "RUB",
+			Duration:  time.Hour * 24 * 7, // 1 неделя
+			TrafficGB: 40,                 // 40 GB Limit
+			IsActive:  true,
+			SortOrder: 6,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
 			Name:      "Стандарт 30 дней",
 			Price:     150.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24 * 30, // Use time.Duration
 			TrafficGB: 50,                  // 50 GB Limit
 			IsActive:  true,
-			SortOrder: 10,
+			SortOrder: 7,
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
@@ -136,7 +202,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Duration:  time.Hour * 24 * 30, // Use time.Duration
 			TrafficGB: 0,                   // Unlimited
 			IsActive:  true,
-			SortOrder: 20,
+			SortOrder: 8,
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
@@ -147,7 +213,40 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Duration:  time.Hour * 24 * 90, // Use time.Duration
 			TrafficGB: 150,                 // 150 GB Limit
 			IsActive:  true,
-			SortOrder: 30,
+			SortOrder: 9,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			Name:      "Безлимит 90 дней",
+			Price:     600.00,
+			Currency:  "RUB",
+			Duration:  time.Hour * 24 * 90, // 3 месяца
+			TrafficGB: 0,                   // Unlimited
+			IsActive:  true,
+			SortOrder: 10,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			Name:      "Стандарт 1 год",
+			Price:     1200.00,
+			Currency:  "RUB",
+			Duration:  time.Hour * 24 * 365, // 1 год
+			TrafficGB: 500,                  // 500 GB Limit
+			IsActive:  true,
+			SortOrder: 11,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			Name:      "Безлимит 1 год",
+			Price:     2000.00,
+			Currency:  "RUB",
+			Duration:  time.Hour * 24 * 365, // 1 год
+			TrafficGB: 0,                    // Unlimited
+			IsActive:  true,
+			SortOrder: 12,
 			CreatedAt: now,
 			UpdatedAt: now,
 		},

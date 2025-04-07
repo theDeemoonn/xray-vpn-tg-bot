@@ -577,7 +577,7 @@ func (b *Bot) handleSelectServerCallback(ctx context.Context, bot *gobot.Bot, up
 	}
 	editParams := &gobot.EditMessageTextParams{
 		ChatID:      chatID,
-		MessageID:   update.CallbackQuery.Message.Message.MessageThreadID, // Fix after
+		MessageID:   update.CallbackQuery.Message.Message.ID,
 		Text:        "Выберите сервер для подключения:",
 		ReplyMarkup: serverKeyboard,
 	}
@@ -681,7 +681,7 @@ func (b *Bot) handleServerSelectionCallback(ctx context.Context, bot *gobot.Bot,
 	}
 	editParams := &gobot.EditMessageTextParams{
 		ChatID:      chatID,
-		MessageID:   update.CallbackQuery.Message.Message.MessageThreadID, // Safe now
+		MessageID:   update.CallbackQuery.Message.Message.ID,
 		Text:        fmt.Sprintf("✅ Подписка успешно настроена на сервер '%s'!\n\nНажмите кнопку ниже, чтобы получить конфигурацию.", escapeMarkdownV2(serverName)),
 		ParseMode:   "MarkdownV2",
 		ReplyMarkup: configMarkup,
@@ -700,7 +700,7 @@ func (b *Bot) handleServerSelectionCallback(ctx context.Context, bot *gobot.Bot,
 // handleBackToFAQCallback handles the "Back to FAQ" button press (shows categories)
 func (b *Bot) handleBackToFAQCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
 	chatID := update.CallbackQuery.Message.Message.Chat.ID
-	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	messageID := update.CallbackQuery.Message.Message.ID
 	b.logger.DebugContext(ctx, "Handling back to FAQ callback", slog.Int64("chat_id", chatID))
 	b.showFAQCategories(ctx, bot, chatID, messageID)
 	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
@@ -709,7 +709,7 @@ func (b *Bot) handleBackToFAQCallback(ctx context.Context, bot *gobot.Bot, updat
 // handleBackToInstructionsCallback handles the "Back to Instructions" button press (shows platforms)
 func (b *Bot) handleBackToInstructionsCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
 	chatID := update.CallbackQuery.Message.Message.Chat.ID
-	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	messageID := update.CallbackQuery.Message.Message.ID
 	b.logger.DebugContext(ctx, "Handling back to Instructions callback", slog.Int64("chat_id", chatID))
 	b.showInstructionPlatforms(ctx, bot, chatID, messageID)
 	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
@@ -718,7 +718,7 @@ func (b *Bot) handleBackToInstructionsCallback(ctx context.Context, bot *gobot.B
 // handleBackToHelpRootCallback handles the "Back" button press from category/platform lists
 func (b *Bot) handleBackToHelpRootCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
 	chatID := update.CallbackQuery.Message.Message.Chat.ID
-	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	messageID := update.CallbackQuery.Message.Message.ID
 	b.logger.DebugContext(ctx, "Handling back to help root callback", slog.Int64("chat_id", chatID))
 
 	params := &gobot.EditMessageTextParams{
@@ -737,7 +737,7 @@ func (b *Bot) handleBackToHelpRootCallback(ctx context.Context, bot *gobot.Bot, 
 // handleFAQCategoryCallback handles selection of an FAQ category.
 func (b *Bot) handleFAQCategoryCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
 	chatID := update.CallbackQuery.Message.Message.Chat.ID
-	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	messageID := update.CallbackQuery.Message.Message.ID
 	callbackData := update.CallbackQuery.Data
 	category := strings.TrimPrefix(callbackData, callbackPrefixFAQCategory)
 
@@ -788,7 +788,7 @@ func (b *Bot) handleFAQCategoryCallback(ctx context.Context, bot *gobot.Bot, upd
 // handleFAQQuestionCallback handles selection of a specific FAQ question.
 func (b *Bot) handleFAQQuestionCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
 	chatID := update.CallbackQuery.Message.Message.Chat.ID
-	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	messageID := update.CallbackQuery.Message.Message.ID
 	callbackData := update.CallbackQuery.Data
 	faqIDHex := strings.TrimPrefix(callbackData, callbackPrefixFAQQuestion)
 
@@ -839,7 +839,7 @@ func (b *Bot) handleFAQQuestionCallback(ctx context.Context, bot *gobot.Bot, upd
 // handleInstructionPlatformCallback handles selection of an instruction platform.
 func (b *Bot) handleInstructionPlatformCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
 	chatID := update.CallbackQuery.Message.Message.Chat.ID
-	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	messageID := update.CallbackQuery.Message.Message.ID
 	callbackData := update.CallbackQuery.Data
 	platform := strings.TrimPrefix(callbackData, callbackPrefixInstructionPlatform)
 
@@ -890,7 +890,7 @@ func (b *Bot) handleInstructionPlatformCallback(ctx context.Context, bot *gobot.
 // handleInstructionDetailsCallback handles selection of a specific instruction.
 func (b *Bot) handleInstructionDetailsCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
 	chatID := update.CallbackQuery.Message.Message.Chat.ID
-	messageID := update.CallbackQuery.Message.Message.MessageThreadID
+	messageID := update.CallbackQuery.Message.Message.ID
 	callbackData := update.CallbackQuery.Data
 	instructionIDHex := strings.TrimPrefix(callbackData, callbackPrefixInstructionDetails)
 
@@ -942,8 +942,31 @@ func (b *Bot) handleInstructionDetailsCallback(ctx context.Context, bot *gobot.B
 // defaultHandler handles any message that doesn't match other handlers.
 // It needs to be a method of *Bot to be used in WithDefaultHandler.
 func (b *Bot) defaultHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	// Debug logging for update type
+	updateType := "unknown"
+	if update.Message != nil {
+		updateType = "message"
+	} else if update.CallbackQuery != nil {
+		updateType = "callback_query"
+	} else if update.PreCheckoutQuery != nil {
+		updateType = "pre_checkout_query"
+	} else if update.ShippingQuery != nil {
+		updateType = "shipping_query"
+	} else if update.ChannelPost != nil {
+		updateType = "channel_post"
+	} else if update.EditedMessage != nil {
+		updateType = "edited_message"
+	}
+	b.logger.DebugContext(ctx, "Received update in defaultHandler", slog.String("update_type", updateType))
+
 	if update.Message == nil {
-		// Ignore non-message updates in default handler (e.g., channel posts)
+		// Non-message updates: check if we have other important updates
+		if update.PreCheckoutQuery != nil {
+			b.logger.InfoContext(ctx, "PreCheckoutQuery received", slog.String("query_id", update.PreCheckoutQuery.ID))
+			b.preCheckoutQueryHandler(ctx, bot, update)
+			return
+		}
+		b.logger.DebugContext(ctx, "Ignoring non-message update in defaultHandler")
 		return
 	}
 
@@ -955,6 +978,7 @@ func (b *Bot) defaultHandler(ctx context.Context, bot *gobot.Bot, update *models
 
 	// Handle SuccessfulPayment if present
 	if update.Message.SuccessfulPayment != nil {
+		b.logger.InfoContext(ctx, "SuccessfulPayment received in message", slog.String("charge_id", update.Message.SuccessfulPayment.TelegramPaymentChargeID))
 		b.successfulPaymentHandler(ctx, bot, update)
 		return
 	}

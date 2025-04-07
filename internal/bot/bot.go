@@ -19,12 +19,13 @@ const (
 	callbackActionSelectServer        = "select_srv:"
 	callbackActionConfigureServer     = "config_srv:"
 	callbackActionConfirmServer       = "confirm_srv_"
-	callbackActionFAQCategory         = "faq_category:"
-	callbackActionFAQQuestion         = "faq_question:"
-	callbackActionInstructionPlatform = "instruction_platform:"
-	callbackActionInstructionDetails  = "instruction_details:"
-	callbackActionBackToFAQ           = "back_to_faq"
-	callbackActionBackToInstructions  = "back_to_instructions"
+	callbackActionFAQCategory         = "faq_cat:"
+	callbackActionFAQQuestion         = "faq_q:"
+	callbackActionInstructionPlatform = "instr_plat:"
+	callbackActionInstructionDetails  = "instr_det:"
+	callbackActionBackToFAQ           = "back_faq"
+	callbackActionBackToInstructions  = "back_instr"
+	callbackActionBackToHelpRoot      = "back_help"
 )
 
 // Bot represents the Telegram bot application using go-telegram/bot
@@ -98,6 +99,7 @@ func New(
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionInstructionDetails, gobot.MatchTypePrefix, b.handleInstructionDetailsCallback)
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionBackToFAQ, gobot.MatchTypeExact, b.handleBackToFAQCallback)
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionBackToInstructions, gobot.MatchTypeExact, b.handleBackToInstructionsCallback)
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionBackToHelpRoot, gobot.MatchTypeExact, b.handleBackToHelpRootCallback)
 
 	// Note: PreCheckoutQuery and SuccessfulPayment are handled within the defaultHandler
 
