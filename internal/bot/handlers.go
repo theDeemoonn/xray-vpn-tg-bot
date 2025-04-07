@@ -361,7 +361,7 @@ func (b *Bot) handlePlanSelectionCallback(ctx context.Context, bot *gobot.Bot, u
 		SendPhoneNumberToProvider: false,
 		SendEmailToProvider:       false,
 		IsFlexible:                false, // Set to true if prices depend on shipping
-		ReplyMarkup:               nil, // Explicitly set to nil if no keyboard is needed
+		ReplyMarkup:               nil,   // Explicitly set to nil if no keyboard is needed
 		// ProviderData:          "{}", // Optional JSON object for provider
 		// PhotoURL:              "", // Optional photo URL
 		// PhotoSize:             0,
