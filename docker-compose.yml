@@ -11,10 +11,10 @@ services:
       - mongo_data:/data/db # Persist MongoDB data
     environment:
       TZ: Etc/UTC # Consistent timezone
-      # For production, uncomment and set strong passwords:
+      # Закомментировать эти строки для отключения аутентификации:
       # MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
       # MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
-      # MONGO_INITDB_DATABASE: ${MONGO_DB_NAME} # Optionally create the app DB
+      # MONGO_INITDB_DATABASE: ${MONGO_DB_NAME}
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 30s
@@ -41,31 +41,29 @@ services:
       TZ: Etc/UTC
 
       # --- Database --- #
-      # Use internal service name 'mongo'. Credentials from host env.
-      MONGO_URI: mongodb://${MONGO_USER:-user}:${MONGO_PASSWORD:-password}@mongo:27017/${MONGO_DB_NAME:-xray_vpn_bot_docker}?authSource=admin
+      # Изменить строку подключения - удалить учетные данные:
+      MONGO_URI: mongodb://mongo:27017/${MONGO_DB_NAME:-xray_vpn_bot_docker}
       MONGO_DB_NAME: ${MONGO_DB_NAME:-xray_vpn_bot_docker}
 
       # --- Telegram --- #
       # Secrets MUST come from host environment or a secrets management system
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
-      TELEGRAM_ADMIN_ID: ${TELEGRAM_ADMIN_ID:-0} 
+      TELEGRAM_ADMIN_ID: ${TELEGRAM_ADMIN_ID:-0}
+      TELEGRAM_PROVIDER_TOKEN: ${TELEGRAM_PROVIDER_TOKEN}
 
       # --- YooKassa --- #
       YOOKASSA_SHOP_ID: ${YOOKASSA_SHOP_ID}
       YOOKASSA_SECRET_KEY: ${YOOKASSA_SECRET_KEY}
       # Set appropriate URLs based on your deployment
-      YOOKASSA_RETURN_URL: ${YOOKASSA_RETURN_URL:-http://localhost:8080/payment/return} 
+      YOOKASSA_RETURN_URL: ${YOOKASSA_RETURN_URL:-http://localhost:8080/payment/return}
       YOOKASSA_WEBHOOK_SECRET: ${YOOKASSA_WEBHOOK_SECRET:-}
 
       # --- XUI --- #
-      # XUI_API_TIMEOUT: 15s 
+      # XUI_API_TIMEOUT: 15s
 
     volumes:
       # Mount a specific docker config file
       - ./configs/docker.yaml:/app/configs/docker.yaml:ro
-      # DO NOT mount .env file directly in production. Pass vars through docker-compose `environment`.
-      # For local development, mounting .env can be convenient IF godotenv is used:
-      # - ./.env:/app/.env:ro
 
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
@@ -78,13 +76,7 @@ volumes:
   mongo_data:
     driver: local # Explicitly define volume driver
 
-# Define a default network (optional, but good practice)
 networks:
   default:
     driver: bridge
     name: xray_vpn_bot_network
-
-# Networks (optional, docker-compose creates a default network)
-# networks:
-#   default:
-#     driver: bridge 

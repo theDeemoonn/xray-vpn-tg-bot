@@ -1,22 +1,20 @@
 # configs/docker.yaml
-# Configuration specifically for running inside Docker via docker-compose
-
 env: "docker"
 
 http_server:
-  address: ":8080" # Listen on all interfaces inside the container
+  address: ":8080"
   timeout: 10s
   idle_timeout: 90s
 
 telegram:
-  # Token and Admin ID should be set via environment variables in docker-compose
-  token: "" # Placeholder - MUST be set by env var TELEGRAM_TOKEN
-  admin_id: 0 # Placeholder - can be set by env var TELEGRAM_ADMIN_ID
+  # Используем пустые строки вместо подстановок переменных ${...}
+  token: ""  # Будет заменено переменной окружения TELEGRAM_TOKEN
+  admin_id: 0  # Будет заменено переменной окружения TELEGRAM_ADMIN_ID
+  provider_token: ""  # Будет заменено переменной окружения TELEGRAM_PROVIDER_TOKEN
 
 mongodb:
-  # URI and DB Name should be set via environment variables in docker-compose
-  uri: "" # Placeholder - MUST be set by env var MONGO_URI
-  db_name: "" # Placeholder - MUST be set by env var MONGO_DB_NAME
+  uri: ""  # Будет заменено переменной окружения MONGO_URI
+  db_name: ""  # Будет заменено переменной окружения MONGO_DB_NAME
   user_collection: "users"
   server_collection: "servers"
   plan_collection: "plans"
@@ -30,9 +28,7 @@ xui:
   api_timeout: 15s
 
 yookassa:
-  # Credentials should be set via environment variables in docker-compose
-  shop_id: "" # Placeholder - MUST be set by env var YOOKASSA_SHOP_ID
-  secret_key: "" # Placeholder - MUST be set by env var YOOKASSA_SECRET_KEY
-  # Return URL might be different depending on ingress/proxy setup
-  return_url: "" # Placeholder - SHOULD be set by env var YOOKASSA_RETURN_URL
-  webhook_secret: "" # Placeholder - can be set by env var YOOKASSA_WEBHOOK_SECRET 
+  shop_id: ""  # Будет заменено переменной окружения YOOKASSA_SHOP_ID
+  secret_key: ""  # Будет заменено переменной окружения YOOKASSA_SECRET_KEY
+  return_url: ""  # Будет заменено переменной окружения YOOKASSA_RETURN_URL
+  webhook_secret: ""  # Может быть заменено переменной окружения YOOKASSA_WEBHOOK_SECRET
