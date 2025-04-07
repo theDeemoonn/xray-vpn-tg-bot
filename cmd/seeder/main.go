@@ -123,7 +123,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Price:     70.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 1, // 1 час
-			TrafficGB: 5,             // 5 GB Limit
+			TrafficGB: 3,             // 3 GB Limit
 			IsActive:  true,
 			SortOrder: 1,
 			CreatedAt: now,
@@ -134,48 +134,27 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Price:     85.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 3, // 3 часа
-			TrafficGB: 10,            // 10 GB Limit
+			TrafficGB: 5,             // 5 GB Limit
 			IsActive:  true,
 			SortOrder: 2,
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		{
-			Name:      "Стандарт 12 часов",
-			Price:     100.00,
-			Currency:  "RUB",
-			Duration:  time.Hour * 12, // 12 часов
-			TrafficGB: 20,             // 20 GB Limit
-			IsActive:  true,
-			SortOrder: 3,
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
+
 		{
 			Name:      "Стандарт 1 день",
-			Price:     80.00,
+			Price:     120.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24, // 1 день
-			TrafficGB: 30,             // 30 GB Limit
+			TrafficGB: 10,             // 10 GB Limit
 			IsActive:  true,
 			SortOrder: 4,
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
 		{
-			Name:      "Безлимит 1 день",
-			Price:     120.00,
-			Currency:  "RUB",
-			Duration:  time.Hour * 24, // 1 день
-			TrafficGB: 0,              // Unlimited
-			IsActive:  true,
-			SortOrder: 5,
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
-		{
 			Name:      "Стандарт 1 неделя",
-			Price:     100.00,
+			Price:     190.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24 * 7, // 1 неделя
 			TrafficGB: 40,                 // 40 GB Limit
@@ -186,7 +165,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 		},
 		{
 			Name:      "Стандарт 30 дней",
-			Price:     150.00,
+			Price:     220.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24 * 30, // Use time.Duration
 			TrafficGB: 50,                  // 50 GB Limit
@@ -230,7 +209,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 		},
 		{
 			Name:      "Стандарт 1 год",
-			Price:     1200.00,
+			Price:     1900.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24 * 365, // 1 год
 			TrafficGB: 500,                  // 500 GB Limit
@@ -241,7 +220,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 		},
 		{
 			Name:      "Безлимит 1 год",
-			Price:     2000.00,
+			Price:     2900.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24 * 365, // 1 год
 			TrafficGB: 0,                    // Unlimited
