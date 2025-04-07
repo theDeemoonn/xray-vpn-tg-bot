@@ -126,7 +126,7 @@ func (r *PaymentRepo) EnsureIndexes(ctx context.Context) error {
 		{
 			// Index for finding payments by provider ID
 			Keys:    bson.D{{Key: "provider", Value: 1}, {Key: "provider_payment_id", Value: 1}},
-			Options: options.Index().SetUnique(true).SetName("provider_id_unique"),
+			Options: options.Index().SetUnique(true).SetSparse(true).SetName("provider_id_unique"),
 		},
 		{
 			// Index for finding payments by user

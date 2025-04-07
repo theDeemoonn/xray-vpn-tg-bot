@@ -18,7 +18,10 @@ const (
 type PaymentProvider string
 
 const (
-	PaymentProviderYooKassaTelegram PaymentProvider = "yookassa_telegram" // Telegram Payments via YooKassa
+	PaymentProviderYooKassa         PaymentProvider = "yookassa"          // Old YooKassa via API
+	PaymentProviderYooKassaWebhook  PaymentProvider = "yookassa_webhook"  // YooKassa via webhook
+	PaymentProviderYooKassaTelegram PaymentProvider = "yookassa_telegram" // YooKassa via Telegram Payments (might rename)
+	PaymentProviderTelegram         PaymentProvider = "telegram_payments" // Direct Telegram Payments
 	// Add other providers if needed
 )
 

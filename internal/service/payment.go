@@ -30,6 +30,7 @@ type PaymentService interface {
 	ConfirmPreCheckout(ctx context.Context, payload string) (*domain.Plan, error)
 	ProcessSuccessfulPayment(ctx context.Context, payload string, providerChargeID string) error
 	GetPaymentStatus(ctx context.Context, paymentID primitive.ObjectID) (domain.PaymentStatus, error)
+	InitiatePayment(ctx context.Context, userID, planID primitive.ObjectID) (paymentIDHex string, err error)
 }
 
 // Payments implements the PaymentService interface.
@@ -102,6 +103,49 @@ func (s *Payments) CreatePendingPayment(ctx context.Context, userID, planID prim
 
 	payload := paymentID.Hex()
 	s.logger.InfoContext(ctx, "Pending payment created successfully", slog.String("payment_id", payload))
+	return payload, nil
+}
+
+// InitiatePayment creates a payment record with pending status and returns its ID as a hex string.
+// This ID should be used as the payload for Telegram SendInvoice.
+func (s *Payments) InitiatePayment(ctx context.Context, userID, planID primitive.ObjectID) (string, error) {
+	s.logger.InfoContext(ctx, "Initiating payment", slog.String("user_id", userID.Hex()), slog.String("plan_id", planID.Hex()))
+
+	plan, err := s.planRepo.GetByID(ctx, planID)
+	if err != nil {
+		if errors.Is(err, apperrors.ErrPlanNotFound) { // Use apperrors
+			s.logger.WarnContext(ctx, "Plan not found for payment initiation", slog.String("plan_id", planID.Hex()))
+			return "", err // Return the original ErrPlanNotFound
+		}
+		s.logger.ErrorContext(ctx, "Failed to get plan for payment initiation", slog.String("plan_id", planID.Hex()), slog.Any("error", err))
+		return "", apperrors.NewInternalError("не удалось получить информацию о тарифном плане", err)
+	}
+
+	if !plan.IsActive {
+		s.logger.WarnContext(ctx, "Attempted to initiate payment for inactive plan", slog.String("plan_id", planID.Hex()))
+		return "", apperrors.NewValidationError("выбранный тарифный план больше не доступен", plan.ID.Hex(), nil)
+	}
+
+	paymentID := primitive.NewObjectID()
+	localPayment := &domain.Payment{
+		ID:        paymentID,
+		UserID:    userID,
+		PlanID:    planID,
+		Amount:    plan.Price,    // Store the actual price at the time of initiation
+		Currency:  plan.Currency, // Store the currency
+		Status:    domain.PaymentStatusPending,
+		Provider:  domain.PaymentProviderTelegram, // Assuming Telegram Payments
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if err := s.paymentRepo.Create(ctx, localPayment); err != nil {
+		s.logger.ErrorContext(ctx, "Failed to save initiated payment record", slog.Any("error", err), slog.Any("payment", localPayment))
+		return "", apperrors.NewInternalError("не удалось сохранить запись о платеже", err)
+	}
+
+	payload := paymentID.Hex()
+	s.logger.InfoContext(ctx, "Payment initiated successfully", slog.String("payment_id", payload))
 	return payload, nil
 }
 

@@ -115,7 +115,7 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 
 	} else {
 		s.logger.InfoContext(ctx, "Creating new subscription DB record", slog.String("user_id", userID.Hex()), slog.Time("expiry", newExpiryDate))
-		newSub := domain.Subscription{
+		newSub := &domain.Subscription{
 			ID:           primitive.NewObjectID(),
 			UserID:       userID,
 			PlanID:       planID,
@@ -129,11 +129,51 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 			TrafficLimit: int64(plan.TrafficGB) * 1024 * 1024 * 1024,
 			TrafficUsed:  0,
 		}
-		if err := s.subRepo.Create(ctx, &newSub); err != nil {
+		if err := s.subRepo.Create(ctx, newSub); err != nil {
 			s.logger.ErrorContext(ctx, "Failed to create new subscription DB record", slog.String("user_id", userID.Hex()), slog.Any("error", err))
 			return err
 		}
 		s.logger.InfoContext(ctx, "New subscription DB record created successfully", slog.String("sub_id", newSub.ID.Hex()))
+		existingSub = newSub
+	}
+
+	// --- Configure server and X-UI client ---
+	var subToConfigure *domain.Subscription
+	if existingSub != nil {
+		subToConfigure = existingSub
+	}
+
+	// Check if already configured (e.g., during renewal, we don't reconfigure)
+	if subToConfigure.ServerID.IsZero() {
+		s.logger.InfoContext(ctx, "Subscription needs server configuration", slog.String("sub_id", subToConfigure.ID.Hex()))
+		// Find an available server (simple logic: take the first enabled one)
+		servers, err := s.serverRepo.GetAllEnabled(ctx)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "Failed to get enabled servers for auto-configuration", slog.Any("error", err))
+			// Non-fatal? Log and maybe notify admin? Subscription is active in DB.
+			// Return nil here as DB update was successful, but log the issue.
+			s.logger.ErrorContext(ctx, "CRITICAL: Subscription activated in DB, but failed to auto-configure server. Manual intervention needed.", slog.String("sub_id", subToConfigure.ID.Hex()))
+			return nil // Or return a specific warning error?
+		}
+		if len(servers) == 0 {
+			s.logger.ErrorContext(ctx, "CRITICAL: No enabled servers found for auto-configuration. Subscription activated in DB without server.", slog.String("sub_id", subToConfigure.ID.Hex()))
+			// Return nil, requires admin action.
+			return nil
+		}
+		selectedServer := servers[0] // Take the first one
+
+		s.logger.InfoContext(ctx, "Attempting to auto-configure server for subscription", slog.String("sub_id", subToConfigure.ID.Hex()), slog.String("server_id", selectedServer.ID.Hex()))
+		configErr := s.ConfigureSubscriptionServer(ctx, userID, subToConfigure.ID, selectedServer.ID)
+		if configErr != nil {
+			// Log the configuration error, but DB update was successful
+			s.logger.ErrorContext(ctx, "CRITICAL: Subscription activated in DB, but auto-configuration failed.", slog.String("sub_id", subToConfigure.ID.Hex()), slog.String("server_id", selectedServer.ID.Hex()), slog.Any("config_error", configErr))
+			// Return nil because the payment was processed and DB updated.
+			// Admin needs to handle the configuration failure.
+			return nil
+		}
+		s.logger.InfoContext(ctx, "Auto-configuration successful", slog.String("sub_id", subToConfigure.ID.Hex()), slog.String("server_id", selectedServer.ID.Hex()))
+	} else {
+		s.logger.InfoContext(ctx, "Subscription already has a server configured, skipping auto-configuration.", slog.String("sub_id", subToConfigure.ID.Hex()), slog.String("server_id", subToConfigure.ServerID.Hex()))
 	}
 
 	s.logger.InfoContext(ctx, "Subscription DB activation/update process completed", slog.String("user_id", userID.Hex()), slog.String("plan_id", planID.Hex()))

@@ -326,11 +326,16 @@ func (b *Bot) handlePlanSelectionCallback(ctx context.Context, bot *gobot.Bot, u
 		return
 	}
 
-	// Create a pending payment record locally and get its ID as payload
-	payload, err := b.paymentService.CreatePendingPayment(ctx, user.ID, plan.ID)
+	// Initiate payment: create pending record in DB and get its ID as payload
+	payload, err := b.paymentService.InitiatePayment(ctx, user.ID, plan.ID)
 	if err != nil {
-		// Service layer logged the error
-		b.sendInternalError(ctx, bot, chatID)
+		// Service layer logs details. Check for specific user-facing errors.
+		var appErr *apperrors.Error
+		if errors.As(err, &appErr) && (appErr.Code == apperrors.ErrCodeNotFound || appErr.Code == apperrors.ErrCodeValidation) {
+			b.sendUserError(ctx, bot, chatID, appErr.Message)
+		} else {
+			b.sendInternalError(ctx, bot, chatID) // Generic error for internal issues
+		}
 		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
 		return
 	}
@@ -356,7 +361,7 @@ func (b *Bot) handlePlanSelectionCallback(ctx context.Context, bot *gobot.Bot, u
 		SendPhoneNumberToProvider: false,
 		SendEmailToProvider:       false,
 		IsFlexible:                false, // Set to true if prices depend on shipping
-		ReplyMarkup:               &models.InlineKeyboardMarkup{ /* Optional inline keyboard for invoice */ },
+		ReplyMarkup:               nil, // Explicitly set to nil if no keyboard is needed
 		// ProviderData:          "{}", // Optional JSON object for provider
 		// PhotoURL:              "", // Optional photo URL
 		// PhotoSize:             0,
@@ -974,30 +979,29 @@ func (b *Bot) defaultHandler(ctx context.Context, bot *gobot.Bot, update *models
 
 // --- Payment Handlers --- //
 
-// preCheckoutQueryHandler handles the pre-checkout query from Telegram.
-// This function can remain as it is, called by defaultHandler.
+// preCheckoutQueryHandler handles the query sent by Telegram before finalizing a payment.
 func (b *Bot) preCheckoutQueryHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
-	if update.PreCheckoutQuery == nil {
-		b.logger.ErrorContext(ctx, "PreCheckoutQuery is nil in handler")
-		return // Cannot proceed
+	query := update.PreCheckoutQuery
+	if query == nil {
+		b.logger.WarnContext(ctx, "Received update without PreCheckoutQuery in preCheckoutQueryHandler")
+		return
 	}
 
-	queryID := update.PreCheckoutQuery.ID
-	payload := update.PreCheckoutQuery.InvoicePayload
-	tgUserID := update.PreCheckoutQuery.From.ID // Use Telegram User ID for logging
-
 	b.logger.InfoContext(ctx, "Received PreCheckoutQuery",
-		slog.String("query_id", queryID),
-		slog.String("payload", payload),
-		slog.Int64("tg_user_id", tgUserID))
+		slog.String("query_id", query.ID),
+		slog.String("payload", query.InvoicePayload),
+		slog.Int("total_amount", query.TotalAmount),
+		slog.String("currency", query.Currency))
 
-	// Call payment service to confirm
-	_, err := b.paymentService.ConfirmPreCheckout(ctx, payload)
+	// Use the payload (which is our internal payment ID) to confirm with the service.
+	// The service will check if the payment exists, is pending, and the plan is still valid.
+	_, err := b.paymentService.ConfirmPreCheckout(ctx, query.InvoicePayload)
 
-	answerParams := &gobot.AnswerPreCheckoutQueryParams{PreCheckoutQueryID: queryID}
+	// --- All checks passed, answer positively ---
+	answerParams := &gobot.AnswerPreCheckoutQueryParams{PreCheckoutQueryID: query.ID}
 	if err != nil {
 		// Log the error (service layer should have logged details)
-		b.logger.WarnContext(ctx, "PreCheckoutQuery rejected", slog.String("query_id", queryID), slog.String("payload", payload), slog.Any("error", err))
+		b.logger.WarnContext(ctx, "PreCheckoutQuery rejected by service", slog.String("query_id", query.ID), slog.String("payload", query.InvoicePayload), slog.Any("error", err))
 
 		// Provide a user-friendly error message if possible
 		var appErr *apperrors.Error
@@ -1010,20 +1014,22 @@ func (b *Bot) preCheckoutQueryHandler(ctx context.Context, bot *gobot.Bot, updat
 		answerParams.ErrorMessage = userMessage
 	} else {
 		answerParams.OK = true
-		b.logger.InfoContext(ctx, "PreCheckoutQuery approved", slog.String("query_id", queryID), slog.String("payload", payload))
+		b.logger.InfoContext(ctx, "PreCheckoutQuery approved by service", slog.String("query_id", query.ID), slog.String("payload", query.InvoicePayload))
 	}
 
 	// Answer the query
 	_, answerErr := bot.AnswerPreCheckoutQuery(ctx, answerParams)
 	if answerErr != nil {
-		b.logger.ErrorContext(ctx, "Failed to answer PreCheckoutQuery", slog.String("query_id", queryID), slog.Any("error", answerErr))
+		b.logger.ErrorContext(ctx, "Failed to answer PreCheckoutQuery", slog.String("query_id", query.ID), slog.Any("error", answerErr))
+		// Log error, but maybe don't send another message to user here?
+		return
 	}
 }
 
-// successfulPaymentHandler handles successful payment notifications.
-// This function can remain as it is, called by defaultHandler.
+// successfulPaymentHandler handles the message about a successful payment.
 func (b *Bot) successfulPaymentHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
-	if update.Message == nil || update.Message.SuccessfulPayment == nil {
+	sp := update.Message.SuccessfulPayment
+	if sp == nil {
 		b.logger.ErrorContext(ctx, "SuccessfulPayment data missing in handler")
 		return
 	}
@@ -1035,7 +1041,7 @@ func (b *Bot) successfulPaymentHandler(ctx context.Context, bot *gobot.Bot, upda
 		return
 	}
 	chatID := update.Message.Chat.ID
-	paymentInfo := update.Message.SuccessfulPayment
+	paymentInfo := sp
 	payload := paymentInfo.InvoicePayload
 	providerChargeID := paymentInfo.TelegramPaymentChargeID
 
@@ -1098,6 +1104,7 @@ func (b *Bot) showFAQCategories(ctx context.Context, bot *gobot.Bot, chatID int6
 			Text:        text,
 			ReplyMarkup: keyboard,
 		}
+		b.logger.DebugContext(ctx, "Attempting to edit message for FAQ categories", slog.Int64("chat_id", chatID), slog.Int("message_id", messageID))
 		_, err = bot.EditMessageText(ctx, params)
 		if err != nil {
 			b.logger.ErrorContext(ctx, "Failed to edit message for FAQ categories", slog.Any("error", err))
@@ -1109,6 +1116,7 @@ func (b *Bot) showFAQCategories(ctx context.Context, bot *gobot.Bot, chatID int6
 			Text:        text,
 			ReplyMarkup: keyboard,
 		}
+		b.logger.DebugContext(ctx, "Attempting to send new message for FAQ categories", slog.Int64("chat_id", chatID))
 		_, err = bot.SendMessage(ctx, params)
 		if err != nil {
 			b.logger.ErrorContext(ctx, "Failed to send message for FAQ categories", slog.Any("error", err))
@@ -1141,6 +1149,7 @@ func (b *Bot) showInstructionPlatforms(ctx context.Context, bot *gobot.Bot, chat
 			Text:        text,
 			ReplyMarkup: keyboard,
 		}
+		b.logger.DebugContext(ctx, "Attempting to edit message for instruction platforms", slog.Int64("chat_id", chatID), slog.Int("message_id", messageID))
 		_, err = bot.EditMessageText(ctx, params)
 		if err != nil {
 			b.logger.ErrorContext(ctx, "Failed to edit message for instruction platforms", slog.Any("error", err))
@@ -1152,6 +1161,7 @@ func (b *Bot) showInstructionPlatforms(ctx context.Context, bot *gobot.Bot, chat
 			Text:        text,
 			ReplyMarkup: keyboard,
 		}
+		b.logger.DebugContext(ctx, "Attempting to send new message for instruction platforms", slog.Int64("chat_id", chatID))
 		_, err = bot.SendMessage(ctx, params)
 		if err != nil {
 			b.logger.ErrorContext(ctx, "Failed to send message for instruction platforms", slog.Any("error", err))
