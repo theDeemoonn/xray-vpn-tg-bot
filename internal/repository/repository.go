@@ -56,6 +56,7 @@ type SubscriptionRepository interface {
 	Update(ctx context.Context, sub *domain.Subscription) error
 	FindToExpire(ctx context.Context, within time.Duration) ([]*domain.Subscription, error) // Find subs expiring soon
 	FindActiveNeedingRenewal(ctx context.Context) ([]*domain.Subscription, error)           // Find active subs with auto-renew
+	FindByFilter(ctx context.Context, filter interface{}) ([]*domain.Subscription, error)
 }
 
 // PaymentRepository defines the interface for payment data storage operations.

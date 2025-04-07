@@ -15,6 +15,7 @@ import (
 	"xray-vpn-tg-bot/internal/xui"
 
 	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -27,6 +28,8 @@ type SubscriptionService interface {
 
 	GetConfigLink(ctx context.Context, sub *domain.Subscription) (string, error)
 	// Add methods for admin management (manual activation, etc.)
+
+	FindAndExpireSubscriptions(ctx context.Context) error
 }
 
 type subscriptionService struct {
@@ -429,4 +432,52 @@ func (s *subscriptionService) generateVlessLink(server *domain.Server, inboundSe
 	}
 
 	return u.String(), nil
+}
+
+// FindAndExpireSubscriptions находит и обновляет статус подписок, которые истекли
+func (s *subscriptionService) FindAndExpireSubscriptions(ctx context.Context) error {
+	now := time.Now()
+	s.logger.InfoContext(ctx, "Проверка и обновление истекших подписок", slog.Time("now", now))
+
+	// Ищем активные подписки с истекшим сроком действия
+	filter := bson.M{
+		"status": domain.SubscriptionStatusActive,
+		"expires_at": bson.M{
+			"$lt": now, // Истекшие подписки
+		},
+		"auto_renew": false, // Исключаем те, которые должны автоматически продлеваться
+	}
+
+	subscriptions, err := s.subRepo.FindByFilter(ctx, filter)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "Ошибка при поиске истекших подписок", slog.Any("error", err))
+		return err
+	}
+
+	s.logger.InfoContext(ctx, "Найдены истекшие подписки", slog.Int("count", len(subscriptions)))
+
+	// Обновляем статус каждой истекшей подписки
+	for _, sub := range subscriptions {
+		oldStatus := sub.Status
+		sub.Status = domain.SubscriptionStatusExpired
+		sub.UpdatedAt = now
+
+		if err := s.subRepo.Update(ctx, sub); err != nil {
+			s.logger.ErrorContext(ctx, "Ошибка при обновлении статуса подписки",
+				slog.String("sub_id", sub.ID.Hex()),
+				slog.String("old_status", string(oldStatus)),
+				slog.String("new_status", string(sub.Status)),
+				slog.Any("error", err))
+			continue // Продолжаем с другими подписками даже если одна завершилась с ошибкой
+		}
+
+		// Возможность отключения клиента на X-UI сервере можно будет добавить позже
+		// при необходимости через непосредственное взаимодействие с X-UI API
+
+		s.logger.InfoContext(ctx, "Подписка успешно помечена как истекшая",
+			slog.String("sub_id", sub.ID.Hex()),
+			slog.String("user_id", sub.UserID.Hex()))
+	}
+
+	return nil
 }

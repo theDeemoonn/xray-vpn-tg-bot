@@ -10,19 +10,29 @@ import (
 	"github.com/joho/godotenv"
 )
 
-type Config struct {
-	Env        string `yaml:"env" env:"ENV" env-default:"local"`
-	HTTPServer `yaml:"http_server"`
-	Telegram   `yaml:"telegram"`
-	MongoDB    `yaml:"mongodb"`
-	XUI        `yaml:"xui"`
-	YooKassa   `yaml:"yookassa"`
+// HTTPServer defines HTTP server configuration
+type HTTPServer struct {
+	Address     string        `yaml:"address" env:"HTTP_ADDR" env-default:":8080"`
+	Timeout     time.Duration `yaml:"timeout" env:"HTTP_TIMEOUT" env-default:"30s"`
+	IdleTimeout time.Duration `yaml:"idle_timeout" env:"HTTP_IDLE_TIMEOUT" env-default:"120s"`
 }
 
-type HTTPServer struct {
-	Address     string        `yaml:"address" env:"HTTP_ADDRESS" env-default:"localhost:8080"`
-	Timeout     time.Duration `yaml:"timeout" env:"HTTP_TIMEOUT" env-default:"5s"`
-	IdleTimeout time.Duration `yaml:"idle_timeout" env:"HTTP_IDLE_TIMEOUT" env-default:"60s"`
+// Workers содержит конфигурацию для фоновых процессов
+type Workers struct {
+	SubscriptionCheckInterval time.Duration `yaml:"subscription_check_interval" env:"WORKER_SUB_CHECK_INTERVAL" env-default:"1h"`
+}
+
+// Config represents the application configuration
+type Config struct {
+	LogLevel    string `yaml:"log_level" env:"LOG_LEVEL" env-default:"info"`
+	Environment string `yaml:"environment" env:"ENVIRONMENT" env-default:"development"`
+
+	Telegram   Telegram   `yaml:"telegram"`
+	MongoDB    MongoDB    `yaml:"mongodb"`
+	HTTPServer HTTPServer `yaml:"http_server"`
+	XUI        XUI        `yaml:"xui"`
+	YooKassa   YooKassa   `yaml:"yookassa"`
+	Workers    Workers    `yaml:"workers"`
 }
 
 type Telegram struct {
@@ -90,7 +100,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("mongodb uri (MONGO_URI or yaml: mongodb.uri) is required")
 	}
 
-	slog.Info("Configuration loaded successfully", slog.String("env", cfg.Env))
+	slog.Info("Configuration loaded successfully", slog.String("env", cfg.Environment))
 
 	return &cfg, nil
 }

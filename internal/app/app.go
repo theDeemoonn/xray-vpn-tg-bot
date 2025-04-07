@@ -17,6 +17,7 @@ import (
 	"xray-vpn-tg-bot/internal/repository"
 	"xray-vpn-tg-bot/internal/repository/mongodb"
 	"xray-vpn-tg-bot/internal/service"
+	"xray-vpn-tg-bot/internal/worker"
 	"xray-vpn-tg-bot/internal/xui"
 
 	"github.com/go-chi/chi/v5"
@@ -31,11 +32,12 @@ const (
 
 // App represents the main application
 type App struct {
-	logger      *slog.Logger
-	cfg         *config.Config
-	httpServer  *http.Server
-	tgBot       *bot.Bot
-	mongoClient *mongodriver.Client
+	logger             *slog.Logger
+	cfg                *config.Config
+	httpServer         *http.Server
+	tgBot              *bot.Bot
+	mongoClient        *mongodriver.Client
+	subscriptionWorker *worker.SubscriptionWorker
 	// Add other components (e.g., task scheduler)
 }
 
@@ -140,6 +142,15 @@ func New(ctx context.Context, logger *slog.Logger, cfg *config.Config) (*App, er
 	instructionService := service.NewInstructionService(instructionRepo, logger)
 	logger.Info("Services initialized")
 
+	// --- Initialize Subscription Worker ---
+	logger.Info("Initializing subscription worker...")
+	subscriptionWorker := worker.NewSubscriptionWorker(
+		subscriptionService,
+		logger,
+		cfg.Workers.SubscriptionCheckInterval,
+	)
+	logger.Info("Subscription worker initialized", slog.Duration("check_interval", cfg.Workers.SubscriptionCheckInterval))
+
 	// --- Initialize Telegram Bot ---
 	logger.Info("Initializing Telegram Bot...")
 	tgBot, err := bot.New(cfg, logger, userService, serverService, subscriptionService, paymentService, planService, faqService, instructionService)
@@ -167,18 +178,19 @@ func New(ctx context.Context, logger *slog.Logger, cfg *config.Config) (*App, er
 	logger.Info("HTTP Server initialized", slog.String("address", cfg.HTTPServer.Address))
 
 	return &App{
-		logger:      logger,
-		cfg:         cfg,
-		httpServer:  httpServer,
-		tgBot:       tgBot,
-		mongoClient: mongoClient,
+		logger:             logger,
+		cfg:                cfg,
+		httpServer:         httpServer,
+		tgBot:              tgBot,
+		mongoClient:        mongoClient,
+		subscriptionWorker: subscriptionWorker,
 	}, nil
 }
 
 // Run starts all application components (HTTP server, Telegram bot polling) and waits for context cancellation.
 func (a *App) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
-	errChan := make(chan error, 2) // Buffered channel for errors from goroutines
+	errChan := make(chan error, 3) // Увеличиваем размер буфера для дополнительного компонента
 
 	// Start HTTP Server
 	wg.Add(1)
@@ -204,6 +216,14 @@ func (a *App) Run(ctx context.Context) error {
 		} else {
 			a.logger.Info("Telegram bot polling stopped gracefully.")
 		}
+	}()
+
+	// Start Subscription Worker
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		a.subscriptionWorker.Start(ctx)
+		a.logger.Info("Subscription worker started.")
 	}()
 
 	// Wait for context cancellation or an error from a component
@@ -233,6 +253,13 @@ func (a *App) Run(ctx context.Context) error {
 // shutdown gracefully stops the application components
 func (a *App) shutdown(ctx context.Context) {
 	a.logger.Info("Starting graceful shutdown...")
+
+	// Stop Subscription Worker (if exists)
+	if a.subscriptionWorker != nil {
+		a.logger.Info("Stopping subscription worker...")
+		a.subscriptionWorker.Stop()
+		a.logger.Info("Subscription worker stopped.")
+	}
 
 	// Stop Telegram Bot polling first (it's stopped by context cancellation in Start)
 	if a.tgBot != nil {

@@ -2,33 +2,33 @@
 env: "docker"
 
 http_server:
-  address: ":8080"
-  timeout: 10s
-  idle_timeout: 90s
+  # address: "${HTTP_ADDRESS}"
+  noop: null
 
 telegram:
-  # Используем пустые строки вместо подстановок переменных ${...}
-  token: ""  # Будет заменено переменной окружения TELEGRAM_TOKEN
-  admin_id: 0  # Будет заменено переменной окружения TELEGRAM_ADMIN_ID
-  provider_token: ""  # Будет заменено переменной окружения TELEGRAM_PROVIDER_TOKEN
+  token: "${TELEGRAM_API_TOKEN}"
+  provider_token: "${TELEGRAM_PROVIDER_TOKEN}"
 
 mongodb:
-  uri: ""  # Будет заменено переменной окружения MONGO_URI
-  db_name: ""  # Будет заменено переменной окружения MONGO_DB_NAME
+  uri: "mongodb://${MONGO_USER}:${MONGO_PASS}@${MONGO_HOST}:${MONGO_PORT}"
+  db_name: "${MONGO_DB}"
   user_collection: "users"
   server_collection: "servers"
   plan_collection: "plans"
   subscription_collection: "subscriptions"
   payment_collection: "payments"
-  referral_collection: "referrals"
   faq_collection: "faqs"
   instruction_collection: "instructions"
+  referral_collection: "referrals"
 
 xui:
-  api_timeout: 15s
+  noop: null
 
 yookassa:
-  shop_id: ""  # Будет заменено переменной окружения YOOKASSA_SHOP_ID
-  secret_key: ""  # Будет заменено переменной окружения YOOKASSA_SECRET_KEY
-  return_url: ""  # Будет заменено переменной окружения YOOKASSA_RETURN_URL
-  webhook_secret: ""  # Может быть заменено переменной окружения YOOKASSA_WEBHOOK_SECRET
+  shop_id: "${YOOKASSA_SHOP_ID}"
+  secret_key: "${YOOKASSA_SECRET_KEY}"
+  return_url: "${YOOKASSA_RETURN_URL}"
+  webhook_key: "${YOOKASSA_WEBHOOK_KEY}"
+
+workers:
+  noop: null

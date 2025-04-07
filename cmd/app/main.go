@@ -22,7 +22,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("Starting application", slog.String("env", cfg.Env))
+	logger.Info("Starting application", slog.String("env", cfg.Environment))
 
 	// Create application context
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

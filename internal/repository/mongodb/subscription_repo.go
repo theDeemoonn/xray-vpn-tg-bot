@@ -230,6 +230,28 @@ func (r *SubscriptionRepo) FindActiveNeedingRenewal(ctx context.Context) ([]*dom
 	return subs, nil
 }
 
+// FindByFilter finds subscriptions matching the given filter
+func (r *SubscriptionRepo) FindByFilter(ctx context.Context, filter interface{}) ([]*domain.Subscription, error) {
+	cursor, err := r.collection.Find(ctx, filter)
+	if err != nil {
+		r.logger.Error("Failed to query subscriptions with filter", slog.Any("filter", filter), slog.String("error", err.Error()))
+		return nil, apperrors.NewInternalError("Не удалось найти подписки по заданным критериям", err)
+	}
+	defer cursor.Close(ctx)
+
+	var subs []*domain.Subscription
+	if err := cursor.All(ctx, &subs); err != nil {
+		r.logger.Error("Failed to decode subscriptions with filter", slog.Any("filter", filter), slog.String("error", err.Error()))
+		return nil, apperrors.NewInternalError("Не удалось декодировать подписки по заданным критериям", err)
+	}
+
+	if subs == nil {
+		subs = []*domain.Subscription{}
+	}
+	r.logger.Debug("Found subscriptions with filter", slog.Int("count", len(subs)))
+	return subs, nil
+}
+
 // EnsureIndexes creates necessary indexes for the subscription collection.
 func (r *SubscriptionRepo) EnsureIndexes(ctx context.Context) error {
 	r.logger.Info("Ensuring indexes for subscription collection...")

@@ -150,6 +150,65 @@ func (c *Client) AddClient(ctx context.Context, inboundID int, client ClientSett
 	return nil
 }
 
+// UpdateClient updates an existing client within a specific inbound.
+// This endpoint is often used to enable/disable clients, update expiry, traffic, etc.
+// Note: X-UI API for updating clients can be inconsistent. This implementation assumes the /panel/inbound/updateClient/{clientId} endpoint
+// exists and works by passing the full client settings structure again.
+func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID string, settings ClientSettings) error {
+	// Ensure login before operation
+	if err := c.ensureLogin(ctx); err != nil {
+		return err
+	}
+
+	// Prepare the API endpoint URL
+	// Using the /panel/inbound/updateClient/{clientId} structure
+	apiEndpoint := fmt.Sprintf("%s/panel/inbound/updateClient/%s", c.baseURL.String(), clientUUID) // Ensure baseURL is string
+
+	// Create the request body with the full settings structure
+	reqBody := map[string]interface{}{
+		"id":         inboundID, // The inbound ID
+		"enable":     settings.Enable,
+		"email":      settings.Email,
+		"expiryTime": settings.ExpiryTime,
+		"totalGB":    settings.TotalGB,
+		// Include other relevant fields from ClientSettings if needed by the API
+		"limitIp": settings.LimitIPs,
+		"subId":   settings.SubscriptionID,
+		"tgId":    settings.TelegramID,
+	}
+
+	// Execute the request
+	resp, err := c.executeRequest(ctx, http.MethodPost, apiEndpoint, reqBody)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Parse the response
+	var response APIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		c.logger.ErrorContext(ctx, "Failed to decode client update response", slog.String("error", err.Error()))
+		return fmt.Errorf("failed to decode API response: %w", err)
+	}
+
+	// Check the response status
+	if !response.Success {
+		c.logger.ErrorContext(ctx, "X-UI failed to update client",
+			slog.Int("inbound_id", inboundID),
+			slog.String("client_uuid", clientUUID),
+			slog.String("message", response.Message),
+		)
+		return fmt.Errorf("x-ui API error during update: %s", response.Message)
+	}
+
+	c.logger.InfoContext(ctx, "Successfully updated x-ui client",
+		slog.Int("inbound_id", inboundID),
+		slog.String("client_uuid", clientUUID),
+		slog.Bool("enabled", settings.Enable),
+	)
+	return nil
+}
+
 // DeleteClient removes a client from a specific inbound.
 // clientId is the identifier used by x-ui (UUID for VLESS/VMess, email for SS, password for Trojan).
 func (c *Client) DeleteClient(ctx context.Context, inboundID int, clientID string) error {
@@ -406,6 +465,100 @@ func (c *Client) GetClientSettings(ctx context.Context, inboundID int, clientEma
 // TODO: Implement functions to generate config links (vmess://, vless://, etc.) based on Inbound and Client settings.
 
 // --- Helper Methods ---
+
+// ensureLogin checks if a login is needed and performs it.
+func (c *Client) ensureLogin(ctx context.Context) error {
+	baseURL, _ := url.Parse(c.baseURL.String()) // Use base URL for cookie check
+	if len(c.httpClient.Jar.Cookies(baseURL)) == 0 {
+		c.logger.Info("No session cookie found, attempting login.")
+		if err := c.Login(ctx); err != nil {
+			return err // Login failed
+		}
+	}
+	return nil
+}
+
+// executeRequest performs a generic HTTP request with context and body, ensuring login and handling re-login.
+func (c *Client) executeRequest(ctx context.Context, method, urlStr string, reqBody interface{}) (*http.Response, error) {
+	if err := c.ensureLogin(ctx); err != nil {
+		return nil, err
+	}
+
+	var bodyReader io.Reader
+	if reqBody != nil {
+		jsonBytes, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		bodyReader = bytes.NewBuffer(jsonBytes)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, urlStr, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if bodyReader != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	c.logger.Debug("Sending x-ui API request", slog.String("method", method), slog.String("url", urlStr))
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrRequestFailed, err)
+	}
+
+	// Check for non-OK status codes immediately
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Attempt to re-login on 401 Unauthorized
+		if resp.StatusCode == http.StatusUnauthorized {
+			c.logger.Warn("Received 401 Unauthorized, attempting re-login and retry")
+			_ = resp.Body.Close()
+
+			if loginErr := c.Login(ctx); loginErr != nil {
+				return nil, loginErr
+			}
+
+			// Recreate request reader if it was consumed
+			var bodyReaderRetry io.Reader
+			if reqBody != nil {
+				jsonBytesRetry, _ := json.Marshal(reqBody) // Error handled above
+				bodyReaderRetry = bytes.NewBuffer(jsonBytesRetry)
+			}
+
+			reqRetry, errRetry := http.NewRequestWithContext(ctx, method, urlStr, bodyReaderRetry)
+			if errRetry != nil {
+				return nil, fmt.Errorf("failed to create retry request: %w", errRetry)
+			}
+			reqRetry.Header.Set("Accept", "application/json")
+			if bodyReaderRetry != nil {
+				reqRetry.Header.Set("Content-Type", "application/json")
+			}
+
+			c.logger.Debug("Retrying x-ui API request after re-login", slog.String("method", method), slog.String("url", urlStr))
+			respRetry, errRetry := c.httpClient.Do(reqRetry)
+			if errRetry != nil {
+				return nil, fmt.Errorf("%w: retry failed: %w", ErrRequestFailed, errRetry)
+			}
+			// Check status code of the retry attempt
+			if respRetry.StatusCode < 200 || respRetry.StatusCode >= 300 {
+				bodyBytes, _ := io.ReadAll(respRetry.Body)
+				_ = respRetry.Body.Close()
+				c.logger.Error("x-ui API request failed on retry", slog.String("method", method), slog.String("url", urlStr), slog.Int("status_code", respRetry.StatusCode), slog.String("body", string(bodyBytes)))
+				return nil, fmt.Errorf("%w: retry failed with status code %d", ErrRequestFailed, respRetry.StatusCode)
+			}
+			return respRetry, nil // Return successful retry response
+		}
+
+		// Handle other non-OK statuses
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		c.logger.Error("x-ui API request failed", slog.String("method", method), slog.String("url", urlStr), slog.Int("status_code", resp.StatusCode), slog.String("body", string(bodyBytes)))
+		return nil, fmt.Errorf("%w: unexpected status code %d", ErrRequestFailed, resp.StatusCode)
+	}
+
+	return resp, nil
+}
 
 // doRequestWithLogin performs an HTTP request, attempting to login first if necessary.
 func (c *Client) doRequestWithLogin(ctx context.Context, method, urlStr string, body io.Reader) (*http.Response, error) {

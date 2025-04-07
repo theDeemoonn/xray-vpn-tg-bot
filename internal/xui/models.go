@@ -13,6 +13,13 @@ type GenericResponse struct {
 	Obj     any    `json:"obj"` // Can be different types depending on the endpoint
 }
 
+// APIResponse is a more specific structure for responses like addClient, updateClient
+type APIResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"msg"` // Use 'msg' field as per observed API behavior
+	Obj     any    `json:"obj,omitempty"`
+}
+
 // --- Add Client Models ---
 
 // AddClientRequest represents the data needed to add a new client.
@@ -22,20 +29,18 @@ type AddClientRequest struct {
 	Clients []ClientSettings `json:"settings"` // Note: x-ui API expects {"id": ..., "settings": "[{\"email\": ...}]"}
 }
 
-// ClientSettings represents the settings for a single client.
-// Fields depend on the inbound protocol (VMess, VLESS, Trojan, SS).
-// Using a generic struct, specific fields might be needed for different protocols.
+// ClientSettings represents the settings for a client in an inbound.
+// Based on common fields used in addClient/updateClient.
 type ClientSettings struct {
-	Email          string `json:"email"`                // Unique identifier for the client
-	UUID           string `json:"id,omitempty"`         // VMess/VLESS UUID (use 'id' field in JSON)
-	Password       string `json:"password,omitempty"`   // Trojan/Shadowsocks password
-	Flow           string `json:"flow,omitempty"`       // VLESS flow (e.g., "xtls-rprx-vision")
-	TotalGB        int    `json:"totalGB,omitempty"`    // Traffic limit in GB (0 for unlimited)
-	ExpiryTime     int64  `json:"expiryTime,omitempty"` // Expiry timestamp (milliseconds since epoch, 0 for unlimited)
-	Enable         bool   `json:"enable"`               // Client enabled status
-	TelegramID     string `json:"tgId,omitempty"`       // Optional Telegram ID
+	Email          string `json:"email"`
+	UUID           string `json:"id"`                   // Mapped to UUID
+	Enable         bool   `json:"enable"`               // Enable/disable client
+	ExpiryTime     int64  `json:"expiryTime,omitempty"` // Expiration timestamp (milliseconds)
+	TotalGB        int    `json:"totalGB,omitempty"`    // Traffic limit in GB (0 = unlimited)
+	Flow           string `json:"flow,omitempty"`       // Flow control (e.g., "xtls-rprx-vision")
+	LimitIPs       int    `json:"limitIp,omitempty"`    // Max IPs allowed (0 = unlimited)
 	SubscriptionID string `json:"subId,omitempty"`      // Optional Subscription ID
-	LimitIP        int    `json:"limitIp,omitempty"`    // Optional IP limit
+	TelegramID     string `json:"tgId,omitempty"`       // Optional Telegram ID (as string)
 }
 
 // AddClientResponse represents the object returned on successful client addition.
@@ -72,21 +77,35 @@ type Inbound struct {
 // InboundRaw represents the raw structure returned by x-ui API for an inbound.
 // Fields like settings and streamSettings are typically JSON strings.
 type InboundRaw struct {
-	ID             int    `json:"id"`
-	UserID         int    `json:"userId"`
-	Up             int64  `json:"up"`
-	Down           int64  `json:"down"`
-	Total          int64  `json:"total"` // Total traffic limit in bytes (0 for unlimited)
-	Remark         string `json:"remark"`
-	Enable         bool   `json:"enable"`
-	ExpiryTime     int64  `json:"expiryTime"` // Expiry timestamp (milliseconds)
-	Listen         string `json:"listen"`
-	Port           int    `json:"port"`
-	Protocol       string `json:"protocol"`       // e.g., "vless", "vmess", "trojan"
-	Settings       string `json:"settings"`       // JSON string of inbound settings
-	StreamSettings string `json:"streamSettings"` // JSON string of stream settings
-	Tag            string `json:"tag"`
-	Sniffing       string `json:"sniffing"` // JSON string of sniffing settings
+	ID             int          `json:"id"`
+	UserID         int          `json:"userId"`
+	Up             int64        `json:"up"`
+	Down           int64        `json:"down"`
+	Total          int64        `json:"total"` // Total traffic limit in bytes (0 for unlimited)
+	Remark         string       `json:"remark"`
+	Enable         bool         `json:"enable"`
+	ExpiryTime     int64        `json:"expiryTime"` // Expiry timestamp (milliseconds)
+	Listen         string       `json:"listen"`
+	Port           int          `json:"port"`
+	Protocol       string       `json:"protocol"`       // e.g., "vless", "vmess", "trojan"
+	Settings       string       `json:"settings"`       // JSON string of inbound settings
+	StreamSettings string       `json:"streamSettings"` // JSON string of stream settings
+	Tag            string       `json:"tag"`
+	Sniffing       string       `json:"sniffing"`              // JSON string of sniffing settings
+	ClientStats    []ClientInfo `json:"clientStats,omitempty"` // Used in some responses
+}
+
+// ClientInfo represents basic client info sometimes included in InboundRaw
+type ClientInfo struct {
+	ID         string `json:"id"` // UUID
+	Flow       string `json:"flow"`
+	Email      string `json:"email"`
+	Total      int    `json:"totalGB"`
+	ExpiryTime int64  `json:"expiryTime"`
+	Enable     bool   `json:"enable"`
+	LimitIP    int    `json:"limitIp"` // Number of IPs allowed
+	TgID       string `json:"tgId"`
+	SubID      string `json:"subId"`
 }
 
 // VlessClientSetting represents a client within VLESS settings JSON.
@@ -102,7 +121,7 @@ type VlessClientSetting struct {
 type VlessSettings struct {
 	Clients    []VlessClientSetting `json:"clients"`
 	Decryption string               `json:"decryption"` // Usually "none"
-	Fallbacks  []any                `json:"fallbacks,omitempty"`
+	Fallbacks  []interface{}        `json:"fallbacks"`  // Type depends on actual usage
 }
 
 // WSSettings represents WebSocket settings within StreamSettings.
@@ -175,7 +194,8 @@ type InboundSettings struct {
 	WSPath      string // From wsSettings.Path
 	WSHost      string // From wsSettings.Headers["Host"]
 	GRPCService string // From grpcSettings.ServiceName
-	// Add other relevant fields derived from settings
+	// Add ClientStats if needed for UpdateClient
+	ClientStats []ClientInfo `json:"-"` // Exclude from standard JSON, populate manually if needed
 }
 
 // ClientTraffic represents the traffic stats for a specific client (email).
