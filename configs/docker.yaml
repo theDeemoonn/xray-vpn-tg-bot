@@ -1,0 +1,38 @@
+# configs/docker.yaml
+# Configuration specifically for running inside Docker via docker-compose
+
+env: "docker"
+
+http_server:
+  address: ":8080" # Listen on all interfaces inside the container
+  timeout: 10s
+  idle_timeout: 90s
+
+telegram:
+  # Token and Admin ID should be set via environment variables in docker-compose
+  token: "" # Placeholder - MUST be set by env var TELEGRAM_TOKEN
+  admin_id: 0 # Placeholder - can be set by env var TELEGRAM_ADMIN_ID
+
+mongodb:
+  # URI and DB Name should be set via environment variables in docker-compose
+  uri: "" # Placeholder - MUST be set by env var MONGO_URI
+  db_name: "" # Placeholder - MUST be set by env var MONGO_DB_NAME
+  user_collection: "users"
+  server_collection: "servers"
+  plan_collection: "plans"
+  subscription_collection: "subscriptions"
+  payment_collection: "payments"
+  referral_collection: "referrals"
+  faq_collection: "faqs"
+  instruction_collection: "instructions"
+
+xui:
+  api_timeout: 15s
+
+yookassa:
+  # Credentials should be set via environment variables in docker-compose
+  shop_id: "" # Placeholder - MUST be set by env var YOOKASSA_SHOP_ID
+  secret_key: "" # Placeholder - MUST be set by env var YOOKASSA_SECRET_KEY
+  # Return URL might be different depending on ingress/proxy setup
+  return_url: "" # Placeholder - SHOULD be set by env var YOOKASSA_RETURN_URL
+  webhook_secret: "" # Placeholder - can be set by env var YOOKASSA_WEBHOOK_SECRET 

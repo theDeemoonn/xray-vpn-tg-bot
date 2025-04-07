@@ -1,0 +1,26 @@
+# configs/local.yaml
+env: "local"
+
+http_server:
+  address: "localhost:8080"
+  timeout: 5s
+  idle_timeout: 60s
+
+telegram:
+  token: "YOUR_TELEGRAM_BOT_TOKEN" # Замените на ваш токен или установите переменную окружения TELEGRAM_TOKEN
+  admin_id: 0 # Замените на ваш Telegram ID для админских уведомлений
+
+mongodb:
+  uri: "mongodb://localhost:27017" # Замените или установите MONGO_URI
+  db_name: "xray_vpn_bot_dev"
+  # Можно переопределить имена коллекций здесь, если нужно
+  # user_collection: "users_dev"
+
+xui:
+  api_timeout: 10s
+
+yookassa:
+  shop_id: "YOUR_YOOKASSA_SHOP_ID" # Замените или установите YOOKASSA_SHOP_ID
+  secret_key: "YOUR_YOOKASSA_SECRET_KEY" # Замените или установите YOOKASSA_SECRET_KEY
+  return_url: "http://localhost:8080/payment/return" # Пример URL, адаптируйте под свою инфраструктуру
+  # webhook_secret: "YOUR_WEBHOOK_SECRET" 

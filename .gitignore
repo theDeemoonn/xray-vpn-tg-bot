@@ -1,0 +1,38 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build artifacts
+*.test
+main
+app # If you build directly without specifying output name
+
+# Output of the go coverage tool, configuration directory
+*.out
+.idea/
+.vscode/
+.fleet/
+.DS_Store
+
+# Environment variables file
+.env
+
+# OS generated files
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Docker volumes (optional, if mounted locally)
+# mongo_data/
+
+# GoLand specific
+/.idea_modules/
+
+# Dependency directory (if using vendor)
+vendor/ 
