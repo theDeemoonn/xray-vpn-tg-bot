@@ -1,7 +1,9 @@
 package bot
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"xray-vpn-tg-bot/internal/domain"
 
 	"github.com/go-telegram/bot/models"
@@ -83,20 +85,9 @@ const (
 	callbackServerAddStepCancel  = callbackPrefixAdminServers + "add_cancel"
 	callbackServerAddStepConfirm = callbackPrefixAdminServers + "add_confirm"
 
-	// Состояния диалога добавления сервера
-	serverAddStateWaitName       = "server_add_wait_name"
-	serverAddStateWaitApiHost    = "server_add_wait_api_host"
-	serverAddStateWaitPublicHost = "server_add_wait_public_host"
-	serverAddStateWaitUsername   = "server_add_wait_username"
-	serverAddStateWaitPassword   = "server_add_wait_password"
-	serverAddStateWaitLocation   = "server_add_wait_location"
-	serverAddStateWaitInbound    = "server_add_wait_inbound"
-	serverAddStateConfirmation   = "server_add_confirmation"
-
 	// Клавиатуры для добавления сервера
-	serverAddCancelButton   = "❌ Отменить"
-	serverAddConfirmButton  = "✅ Подтвердить"
-	serverAddDefaultInbound = 1 // Дефолтный inbound ID
+	serverAddCancelButton  = "❌ Отменить"
+	serverAddConfirmButton = "✅ Подтвердить"
 )
 
 // mainMenuKeyboard возвращает основную клавиатуру меню
@@ -337,7 +328,20 @@ func serverManagementKeyboard() models.InlineKeyboardMarkup {
 	}
 }
 
-// createServerAddConfirmationKeyboard создает клавиатуру для подтверждения добавления сервера
+// Функция, которая создает клавиатуру с кнопкой для копирования ссылки
+func createConfigLinkKeyboard(configLink string) *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{
+					Text: "🔗 Копировать ссылку конфигурации",
+					URL:  configLink, // Прямая ссылка для открытия/копирования
+				},
+			},
+		},
+	}
+}
+
 func createServerAddConfirmationKeyboard() models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -350,3 +354,38 @@ func createServerAddConfirmationKeyboard() models.InlineKeyboardMarkup {
 }
 
 // TODO: Добавить клавиатуры для списка серверов, просмотра/редактирования сервера, подтверждения удаления и т.д.
+
+// getUserKeyboard возвращает клавиатуру с учетом статуса администратора
+func (b *Bot) getUserKeyboard(ctx context.Context, user *domain.User) models.ReplyKeyboardMarkup {
+	// Если пользователь не определен, возвращаем стандартную клавиатуру
+	if user == nil {
+		return *mainMenuKeyboard()
+	}
+
+	// Проверяем статус администратора
+	isAdmin := false
+
+	// Проверяем, является ли пользователь администратором по telegram_id из конфигурации
+	if b.cfg.Telegram.AdminID != 0 && user.TelegramID == b.cfg.Telegram.AdminID {
+		isAdmin = true
+	} else {
+		// Проверяем флаг is_admin в объекте пользователя
+		adminStatus, err := b.userService.IsAdmin(ctx, user.ID)
+		if err == nil && adminStatus {
+			isAdmin = true
+		}
+	}
+
+	// Логируем информацию для отладки
+	b.logger.DebugContext(ctx, "Generating user keyboard",
+		slog.String("user_id", user.ID.Hex()),
+		slog.Int64("telegram_id", user.TelegramID),
+		slog.Bool("is_admin", isAdmin))
+
+	// Возвращаем соответствующую клавиатуру
+	if isAdmin {
+		return *MainMenuKeyboardWithAdmin(true)
+	} else {
+		return *mainMenuKeyboard()
+	}
+}
