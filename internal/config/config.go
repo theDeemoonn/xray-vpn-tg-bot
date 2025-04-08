@@ -2,8 +2,11 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
+	"log"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/ilyakaznacheev/cleanenv"
@@ -36,11 +39,12 @@ type Config struct {
 }
 
 type Telegram struct {
-	Token         string `yaml:"token" env:"TELEGRAM_TOKEN" env-required:"true"`
-	WebhookURL    string `yaml:"webhook_url" env:"TELEGRAM_WEBHOOK_URL"`                           // Если используем вебхуки
-	AdminID       int64  `yaml:"admin_id" env:"TELEGRAM_ADMIN_ID"`                                 // ID админа для уведомлений
-	AdminUsername string `yaml:"admin_username" env:"TELEGRAM_ADMIN_USERNAME"`                     // Username админа для связи (@username)
-	ProviderToken string `yaml:"provider_token" env:"TELEGRAM_PROVIDER_TOKEN" env-required:"true"` // Added for Telegram Payments
+	Token         string  `yaml:"token" env:"TELEGRAM_TOKEN" env-required:"true"`
+	WebhookURL    string  `yaml:"webhook_url" env:"TELEGRAM_WEBHOOK_URL"`
+	AdminID       int64   `yaml:"admin_id" env:"TELEGRAM_ADMIN_ID"`
+	AdminUsername string  `yaml:"admin_username" env:"TELEGRAM_ADMIN_USERNAME"`
+	ProviderToken string  `yaml:"provider_token" env:"TELEGRAM_PROVIDER_TOKEN" env-required:"true"`
+	AdminIDs      []int64 `yaml:"admin_ids"`
 }
 
 type MongoDB struct {
@@ -57,7 +61,10 @@ type MongoDB struct {
 }
 
 type XUI struct {
-	APITimeout time.Duration `yaml:"api_timeout" env:"XUI_API_TIMEOUT" env-default:"10s"`
+	Address  string        `yaml:"address" env:"XUI_ADDRESS" env-required:"true"`
+	Username string        `yaml:"username" env:"XUI_USERNAME" env-required:"true"`
+	Password string        `yaml:"password" env:"XUI_PASSWORD" env-required:"true"`
+	Timeout  time.Duration `yaml:"timeout" env:"XUI_API_TIMEOUT" env-default:"15s"`
 }
 
 type YooKassa struct {
@@ -66,6 +73,11 @@ type YooKassa struct {
 	ReturnURL     string `yaml:"return_url" env:"YOOKASSA_RETURN_URL"`
 	WebhookSecret string `yaml:"webhook_secret" env:"YOOKASSA_WEBHOOK_SECRET"`
 }
+
+var (
+	cfg  *Config
+	once sync.Once
+)
 
 func Load() (*Config, error) {
 	_ = godotenv.Load()
@@ -85,7 +97,7 @@ func Load() (*Config, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("error checking config file %s: %w", configPath, err)
 	} else {
-		slog.Warn("Config file not found, loading from environment variables only", "path", configPath)
+		log.Println("Config file not found, loading from environment variables only", "path", configPath)
 	}
 
 	err := cleanenv.ReadEnv(&cfg)
@@ -100,7 +112,52 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("mongodb uri (MONGO_URI or yaml: mongodb.uri) is required")
 	}
 
-	slog.Info("Configuration loaded successfully", slog.String("env", cfg.Environment))
+	log.Println("Configuration loaded successfully", "env", cfg.Environment)
 
 	return &cfg, nil
+}
+
+func MustLoad() *Config {
+	once.Do(func() {
+		_ = godotenv.Load()
+
+		configPath := os.Getenv("CONFIG_PATH")
+		if configPath == "" {
+			configPath = "config/config.yml"
+		}
+
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			log.Fatalf("config file does not exist: %s", configPath)
+		}
+
+		var tempCfg Config
+
+		if err := cleanenv.ReadConfig(configPath, &tempCfg); err != nil {
+			log.Printf("warning: cannot fully read config %s: %s. Will rely on env vars.", configPath, err)
+		}
+
+		if err := cleanenv.ReadEnv(&tempCfg); err != nil {
+			log.Fatalf("cannot read env variables: %s", err)
+		}
+
+		adminIDsStr := os.Getenv("TELEGRAM_ADMIN_ID")
+		if adminIDsStr != "" {
+			ids := strings.Split(adminIDsStr, ",")
+			tempCfg.Telegram.AdminIDs = make([]int64, 0, len(ids))
+			for _, idStr := range ids {
+				id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
+				if err != nil {
+					log.Printf("warning: invalid admin ID '%s' in TELEGRAM_ADMIN_ID: %v", idStr, err)
+					continue
+				}
+				tempCfg.Telegram.AdminIDs = append(tempCfg.Telegram.AdminIDs, id)
+			}
+		} else if len(tempCfg.Telegram.AdminIDs) == 0 {
+			log.Println("warning: TELEGRAM_ADMIN_ID is not set in environment variables or config file")
+		}
+
+		cfg = &tempCfg
+	})
+
+	return cfg
 }

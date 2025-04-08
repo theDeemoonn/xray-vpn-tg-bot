@@ -3,6 +3,7 @@ package xui
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skip2/go-qrcode"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -27,11 +29,12 @@ var (
 	ErrOperationFailed = errors.New("xui: operation failed") // Generic failure
 )
 
-// Client interacts with the x-ui panel API.
+// Client interacts with the 3x-ui panel API.
+// API documentation: https://github.com/MHSanaei/3x-ui#api-routes
 type Client struct {
 	httpClient *http.Client
 	baseURL    *url.URL
-	apiPath    string // Base path for API endpoints, e.g., "/xui/API/"
+	apiPath    string // Base path for API endpoints, e.g., "/panel/api/inbounds"
 	username   string
 	password   string
 	logger     *slog.Logger
@@ -58,7 +61,7 @@ func NewClient(baseURL string, username string, password string, apiTimeout time
 	return &Client{
 		httpClient: httpClient,
 		baseURL:    parsedURL,
-		apiPath:    "/xui/API/inbounds", // Default API path
+		apiPath:    "/panel/api/inbounds", // Обновленный API путь для 3x-ui
 		username:   username,
 		password:   password,
 		logger:     logger.With(slog.String("component", "xui_client"), slog.String("base_url", parsedURL.String())),
@@ -114,40 +117,142 @@ func (c *Client) AddClient(ctx context.Context, inboundID int, client ClientSett
 	endpoint := path.Join(c.apiPath, "addClient")
 	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
 
-	// x-ui expects client settings as a JSON string within the main JSON body
-	clientSettingsJSON, err := json.Marshal([]ClientSettings{client})
+	// Формируем объект с настройками клиента
+	clientSettings := map[string]interface{}{
+		"email":  client.Email,
+		"enable": true,                  // Всегда true для новых клиентов
+		"tgId":   client.TelegramID,     // Добавляем TelegramID
+		"subId":  client.SubscriptionID, // Добавляем SubscriptionID
+	}
+
+	// Добавляем поля только если они заданы
+	if client.ExpiryTime > 0 {
+		clientSettings["expiryTime"] = client.ExpiryTime
+		c.logger.InfoContext(ctx, "Setting expiry time for client",
+			slog.String("email", client.Email),
+			slog.Int64("expiry_time", client.ExpiryTime))
+	}
+
+	if client.TotalGB > 0 {
+		// В API 3x-ui параметр totalGB должен быть в ГБ
+		clientSettings["totalGB"] = client.TotalGB
+		c.logger.InfoContext(ctx, "Setting traffic limit for client",
+			slog.String("email", client.Email),
+			slog.Int("total_gb", client.TotalGB))
+	} else {
+		// Если трафик не задан, устанавливаем "неограниченный" трафик (большое значение)
+		// 1073741824 GB = 1 ПБ (Петабайт) - практически неограниченный трафик
+		clientSettings["totalGB"] = 1073741824
+		c.logger.InfoContext(ctx, "Setting unlimited traffic for client (1 PB)",
+			slog.String("email", client.Email))
+	}
+
+	// Добавляем ID клиента и другие протоколо-зависимые поля
+	switch strings.ToLower(client.Protocol) {
+	case "vless", "vmess":
+		clientSettings["id"] = client.UUID // ID для VMESS/VLESS (в 3x-ui API используется "id", а не "uuid")
+		if client.Flow != "" {
+			clientSettings["flow"] = client.Flow
+		} else {
+			clientSettings["flow"] = "none" // Явно указываем flow по умолчанию
+		}
+	case "trojan":
+		clientSettings["password"] = client.UUID // Используем UUID как пароль
+	case "shadowsocks":
+		clientSettings["password"] = client.UUID // Используем UUID как пароль
+		if client.Method != "" {
+			clientSettings["method"] = client.Method
+		}
+	case "wireguard":
+		// Добавить поля WG: publicKey, privateKey, presharedKey, allowedIPs, clientAddress
+		c.logger.WarnContext(ctx, "AddClient for WireGuard might require more fields", slog.Int("inbound_id", inboundID))
+	default:
+		c.logger.WarnContext(ctx, "Unknown or missing protocol for client settings, sending basic fields",
+			slog.Int("inbound_id", inboundID),
+			slog.String("email", client.Email))
+		if client.UUID != "" {
+			clientSettings["id"] = client.UUID
+		}
+	}
+
+	// Создаем правильную структуру запроса: settings должен содержать массив clients
+	settingsObj := map[string]interface{}{
+		"clients": []interface{}{clientSettings},
+	}
+
+	// Маршалим настройки клиента в JSON-строку
+	settingsJSON, err := json.Marshal(settingsObj)
 	if err != nil {
 		return fmt.Errorf("failed to marshal client settings: %w", err)
 	}
 
+	// Создаем основной запрос, где settings - это СТРОКА
 	reqPayload := map[string]interface{}{
-		"id":       inboundID,
-		"settings": string(clientSettingsJSON),
+		"id":       inboundID,            // ID инбаунда как число
+		"settings": string(settingsJSON), // Настройки клиента как СТРОКА JSON
 	}
 
+	// Маршалим весь запрос в JSON
 	jsonBody, err := json.Marshal(reqPayload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal add client request: %w", err)
 	}
 
+	// Логируем тело запроса перед отправкой
+	c.logger.Debug("Sending AddClient request body",
+		slog.String("body", string(jsonBody)),
+		slog.String("email", client.Email),
+		slog.String("uuid", client.UUID))
+
 	resp, err := c.doRequestWithLogin(ctx, http.MethodPost, apiURL.String(), bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return err // Error already wrapped in doRequestWithLogin
+		// Для ошибок 500 пытаемся прочитать ответ сервера для более детальной диагностики
+		if xerr, ok := err.(interface{ Unwrap() error }); ok {
+			if reqErr, ok := xerr.Unwrap().(*url.Error); ok && reqErr != nil {
+				c.logger.Error("Detailed error info for API request",
+					slog.String("url_error", reqErr.Error()),
+					slog.String("op", reqErr.Op),
+					slog.String("url", reqErr.URL))
+			}
+		}
+		return err
 	}
 	defer resp.Body.Close()
 
+	// Читаем тело ответа полностью
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Декодируем как GenericResponse
 	var genericResp GenericResponse
-	if err := json.NewDecoder(resp.Body).Decode(&genericResp); err != nil {
-		return fmt.Errorf("failed to decode add client response: %w", err)
+	err = json.Unmarshal(respBody, &genericResp)
+	if err != nil {
+		return fmt.Errorf("failed to decode response: %w, body: %s", err, string(respBody))
 	}
 
-	if !genericResp.Success {
-		c.logger.Error("Failed to add x-ui client", slog.Int("inbound_id", inboundID), slog.String("client_email", client.Email), slog.String("msg", genericResp.Msg))
-		return fmt.Errorf("%w: %s", ErrOperationFailed, genericResp.Msg)
+	// Проверяем успешность операции
+	if genericResp.Success {
+		c.logger.Info("Successfully added x-ui client",
+			slog.Int("inbound_id", inboundID),
+			slog.String("client_email", client.Email),
+			slog.Int("traffic_gb", client.TotalGB),
+			slog.Int64("expiry_time", client.ExpiryTime))
+		return nil
 	}
 
-	c.logger.Info("Successfully added x-ui client", slog.Int("inbound_id", inboundID), slog.String("client_email", client.Email))
-	return nil
+	// В случае ошибки
+	errMsg := genericResp.Msg
+	if errMsg == "" {
+		errMsg = "unknown error from 3x-ui response"
+	}
+	c.logger.Error("Failed to add x-ui client",
+		slog.Int("inbound_id", inboundID),
+		slog.String("client_email", client.Email),
+		slog.String("msg", errMsg),
+		slog.String("raw_body", string(respBody)))
+	return fmt.Errorf("%w: %s", ErrOperationFailed, errMsg)
 }
 
 // UpdateClient updates an existing client within a specific inbound.
@@ -160,9 +265,9 @@ func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID str
 		return err
 	}
 
-	// Prepare the API endpoint URL
-	// Using the /panel/inbound/updateClient/{clientId} structure
-	apiEndpoint := fmt.Sprintf("%s/panel/inbound/updateClient/%s", c.baseURL.String(), clientUUID) // Ensure baseURL is string
+	// Prepare the API endpoint URL - обновлено для 3x-ui API
+	endpoint := path.Join(c.apiPath, "updateClient", clientUUID)
+	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
 
 	// Create the request body with the full settings structure
 	reqBody := map[string]interface{}{
@@ -178,7 +283,7 @@ func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID str
 	}
 
 	// Execute the request
-	resp, err := c.executeRequest(ctx, http.MethodPost, apiEndpoint, reqBody)
+	resp, err := c.executeRequest(ctx, http.MethodPost, apiURL.String(), reqBody)
 	if err != nil {
 		return err
 	}
@@ -290,9 +395,9 @@ func (c *Client) GetClientTraffic(ctx context.Context, email string) (*ClientTra
 	return &clientTraffic, nil
 }
 
-// GetInbound retrieves and parses settings for a specific inbound ID.
-func (c *Client) GetInbound(ctx context.Context, inboundID int) (*InboundSettings, error) {
-	endpoint := path.Join(c.apiPath, "get", strconv.Itoa(inboundID))
+// GetAllInbounds retrieves all inbounds from the 3x-ui panel.
+func (c *Client) GetAllInbounds(ctx context.Context) ([]InboundRaw, error) {
+	endpoint := path.Join(c.apiPath, "list")
 	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
 
 	resp, err := c.doRequestWithLogin(ctx, http.MethodGet, apiURL.String(), nil)
@@ -303,21 +408,225 @@ func (c *Client) GetInbound(ctx context.Context, inboundID int) (*InboundSetting
 
 	var genericResp GenericResponse
 	if err := json.NewDecoder(resp.Body).Decode(&genericResp); err != nil {
-		return nil, fmt.Errorf("failed to decode get inbound response: %w", err)
+		return nil, fmt.Errorf("failed to decode get all inbounds response: %w", err)
+	}
+
+	if !genericResp.Success {
+		c.logger.Error("Failed to get all inbounds", slog.String("msg", genericResp.Msg))
+		return nil, fmt.Errorf("%w: %s", ErrOperationFailed, genericResp.Msg)
+	}
+
+	if genericResp.Obj == nil {
+		return []InboundRaw{}, nil // Возвращаем пустой массив, если нет данных
+	}
+
+	// Преобразуем Obj в массив InboundRaw
+	objBytes, err := json.Marshal(genericResp.Obj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal inbounds obj: %w", err)
+	}
+
+	var inbounds []InboundRaw
+	if err := json.Unmarshal(objBytes, &inbounds); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal inbounds obj: %w", err)
+	}
+
+	return inbounds, nil
+}
+
+// GetOnlineUsers retrieves a list of emails of currently online users.
+func (c *Client) GetOnlineUsers(ctx context.Context) ([]string, error) {
+	endpoint := path.Join(c.apiPath, "onlines")
+	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
+
+	resp, err := c.doRequestWithLogin(ctx, http.MethodPost, apiURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var genericResp GenericResponse
+	if err := json.NewDecoder(resp.Body).Decode(&genericResp); err != nil {
+		return nil, fmt.Errorf("failed to decode online users response: %w", err)
+	}
+
+	if !genericResp.Success {
+		c.logger.Error("Failed to get online users", slog.String("msg", genericResp.Msg))
+		return nil, fmt.Errorf("%w: %s", ErrOperationFailed, genericResp.Msg)
+	}
+
+	if genericResp.Obj == nil {
+		return []string{}, nil // Возвращаем пустой массив, если нет онлайн пользователей
+	}
+
+	// Преобразуем Obj в массив строк (emails)
+	objBytes, err := json.Marshal(genericResp.Obj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal online users obj: %w", err)
+	}
+
+	var emails []string
+	if err := json.Unmarshal(objBytes, &emails); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal online users obj: %w", err)
+	}
+
+	return emails, nil
+}
+
+// ResetClientTraffic сбрасывает статистику трафика для клиента по email
+func (c *Client) ResetClientTraffic(ctx context.Context, inboundID int, email string) error {
+	encodedEmail := url.PathEscape(email)
+	endpoint := path.Join(c.apiPath, strconv.Itoa(inboundID), "resetClientTraffic", encodedEmail)
+	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
+
+	resp, err := c.doRequestWithLogin(ctx, http.MethodPost, apiURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var genericResp GenericResponse
+	if err := json.NewDecoder(resp.Body).Decode(&genericResp); err != nil {
+		return fmt.Errorf("failed to decode reset client traffic response: %w", err)
 	}
 
 	if !genericResp.Success {
 		if strings.Contains(strings.ToLower(genericResp.Msg), "not found") {
-			c.logger.Warn("Inbound not found", slog.Int("inbound_id", inboundID), slog.String("msg", genericResp.Msg))
+			c.logger.Warn("Client not found for traffic reset", slog.Int("inbound_id", inboundID), slog.String("email", email), slog.String("msg", genericResp.Msg))
+			return ErrClientNotFound
+		}
+		c.logger.Error("Failed to reset client traffic", slog.Int("inbound_id", inboundID), slog.String("email", email), slog.String("msg", genericResp.Msg))
+		return fmt.Errorf("%w: %s", ErrOperationFailed, genericResp.Msg)
+	}
+
+	c.logger.Info("Successfully reset client traffic", slog.Int("inbound_id", inboundID), slog.String("email", email))
+	return nil
+}
+
+// ResetAllTraffics сбрасывает трафик для всех inbounds
+func (c *Client) ResetAllTraffics(ctx context.Context) error {
+	endpoint := path.Join(c.apiPath, "resetAllTraffics")
+	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
+
+	resp, err := c.doRequestWithLogin(ctx, http.MethodPost, apiURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var genericResp GenericResponse
+	if err := json.NewDecoder(resp.Body).Decode(&genericResp); err != nil {
+		return fmt.Errorf("failed to decode reset all traffics response: %w", err)
+	}
+
+	if !genericResp.Success {
+		c.logger.Error("Failed to reset all traffics", slog.String("msg", genericResp.Msg))
+		return fmt.Errorf("%w: %s", ErrOperationFailed, genericResp.Msg)
+	}
+
+	c.logger.Info("Successfully reset all traffics")
+	return nil
+}
+
+// GetClientIps получает список IP-адресов клиента по email
+func (c *Client) GetClientIps(ctx context.Context, email string) ([]string, error) {
+	encodedEmail := url.PathEscape(email)
+	endpoint := path.Join(c.apiPath, "clientIps", encodedEmail)
+	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
+
+	resp, err := c.doRequestWithLogin(ctx, http.MethodPost, apiURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var genericResp GenericResponse
+	if err := json.NewDecoder(resp.Body).Decode(&genericResp); err != nil {
+		return nil, fmt.Errorf("failed to decode client IPs response: %w", err)
+	}
+
+	if !genericResp.Success {
+		if strings.Contains(strings.ToLower(genericResp.Msg), "not found") {
+			c.logger.Warn("Client not found for IPs lookup", slog.String("email", email), slog.String("msg", genericResp.Msg))
+			return nil, ErrClientNotFound
+		}
+		c.logger.Error("Failed to get client IPs", slog.String("email", email), slog.String("msg", genericResp.Msg))
+		return nil, fmt.Errorf("%w: %s", ErrOperationFailed, genericResp.Msg)
+	}
+
+	if genericResp.Obj == nil {
+		return []string{}, nil // Пустой список IP-адресов
+	}
+
+	// Преобразуем Obj в массив строк (IP адресов)
+	objBytes, err := json.Marshal(genericResp.Obj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal client IPs obj: %w", err)
+	}
+
+	var ips []string
+	if err := json.Unmarshal(objBytes, &ips); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal client IPs obj: %w", err)
+	}
+
+	return ips, nil
+}
+
+// ClearClientIps очищает список IP-адресов клиента по email
+func (c *Client) ClearClientIps(ctx context.Context, email string) error {
+	encodedEmail := url.PathEscape(email)
+	endpoint := path.Join(c.apiPath, "clearClientIps", encodedEmail)
+	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
+
+	resp, err := c.doRequestWithLogin(ctx, http.MethodPost, apiURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var genericResp GenericResponse
+	if err := json.NewDecoder(resp.Body).Decode(&genericResp); err != nil {
+		return fmt.Errorf("failed to decode clear client IPs response: %w", err)
+	}
+
+	if !genericResp.Success {
+		if strings.Contains(strings.ToLower(genericResp.Msg), "not found") {
+			c.logger.Warn("Client not found for clearing IPs", slog.String("email", email), slog.String("msg", genericResp.Msg))
+			return ErrClientNotFound
+		}
+		c.logger.Error("Failed to clear client IPs", slog.String("email", email), slog.String("msg", genericResp.Msg))
+		return fmt.Errorf("%w: %s", ErrOperationFailed, genericResp.Msg)
+	}
+
+	c.logger.Info("Successfully cleared client IPs", slog.String("email", email))
+	return nil
+}
+
+// GetInbound fetches and parses an inbound with all its settings.
+func (c *Client) GetInbound(ctx context.Context, inboundID int) (*InboundSettings, error) {
+	endpoint := path.Join(c.apiPath, "get", strconv.Itoa(inboundID))
+	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
+
+	resp, err := c.doRequestWithLogin(ctx, http.MethodGet, apiURL.String(), nil)
+	if err != nil {
+		return nil, err // Error from doRequestWithLogin
+	}
+	defer resp.Body.Close()
+
+	var genericResp GenericResponse
+	if err := json.NewDecoder(resp.Body).Decode(&genericResp); err != nil {
+		return nil, fmt.Errorf("failed to decode get inbound response: %w", err)
+	}
+
+	if !genericResp.Success {
+		if genericResp.Msg == "The inbound is not found." || strings.Contains(strings.ToLower(genericResp.Msg), "not found") {
 			return nil, ErrInboundNotFound
 		}
 		c.logger.Error("Failed to get inbound details", slog.Int("inbound_id", inboundID), slog.String("msg", genericResp.Msg))
 		return nil, fmt.Errorf("%w: %s", ErrOperationFailed, genericResp.Msg)
 	}
-
 	if genericResp.Obj == nil {
-		c.logger.Warn("Inbound not found (obj is nil)", slog.Int("inbound_id", inboundID), slog.String("msg", genericResp.Msg))
-		return nil, ErrInboundNotFound
+		return nil, ErrInboundNotFound // Or a different error? Inbound exists but obj is nil
 	}
 
 	// Marshal Obj back to JSON and unmarshal into InboundRaw
@@ -331,25 +640,707 @@ func (c *Client) GetInbound(ctx context.Context, inboundID int) (*InboundSetting
 		return nil, fmt.Errorf("failed to unmarshal inbound obj: %w", err)
 	}
 
-	// Now parse the nested JSON strings
-	var streamSettings StreamSettings
-	if err := json.Unmarshal([]byte(rawInbound.StreamSettings), &streamSettings); err != nil {
-		c.logger.Error("Failed to unmarshal inbound streamSettings JSON", slog.Int("inbound_id", inboundID), slog.String("json_string", rawInbound.StreamSettings), slog.Any("error", err))
-		// Continue without stream settings? Or return error?
-		// return nil, fmt.Errorf("failed to parse stream settings: %w", err)
+	// Parse settings and streamSettings into native Go structures
+	inboundSettings, err := c.parseInboundRaw(&rawInbound)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse inbound settings: %w", err)
 	}
 
-	// Parse protocol-specific settings (example for VLESS)
-	// TODO: Handle other protocols (VMess, Trojan, etc.)
-	if rawInbound.Protocol == "vless" {
+	// Now parse clients based on protocol
+	var clients []ClientSettings
+	switch rawInbound.Protocol {
+	case "vless":
 		var vlessSettings VlessSettings
 		if err := json.Unmarshal([]byte(rawInbound.Settings), &vlessSettings); err != nil {
-			c.logger.Error("Failed to unmarshal inbound vless settings JSON", slog.Int("inbound_id", inboundID), slog.String("json_string", rawInbound.Settings), slog.Any("error", err))
-			// Continue without client settings? Or return error?
+			c.logger.Error("Failed to unmarshal VLESS settings", slog.Any("error", err))
+			return inboundSettings, nil // Continue with parsed inboundSettings without clients
+		}
+
+		for _, vlessClient := range vlessSettings.Clients {
+			clients = append(clients, ClientSettings{
+				Email:  vlessClient.Email,
+				UUID:   vlessClient.ID,
+				Flow:   vlessClient.Flow,
+				Enable: true, // Assuming all clients in settings are enabled
+			})
+		}
+
+	case "vmess":
+		var vmessSettings VMessSettings
+		if err := json.Unmarshal([]byte(rawInbound.Settings), &vmessSettings); err != nil {
+			c.logger.Error("Failed to unmarshal VMess settings", slog.Any("error", err))
+			return inboundSettings, nil
+		}
+
+		for _, vmessClient := range vmessSettings.Clients {
+			clients = append(clients, ClientSettings{
+				Email:  vmessClient.Email,
+				UUID:   vmessClient.ID,
+				Enable: true,
+			})
+		}
+
+	case "trojan":
+		var trojanSettings TrojanSettings
+		if err := json.Unmarshal([]byte(rawInbound.Settings), &trojanSettings); err != nil {
+			c.logger.Error("Failed to unmarshal Trojan settings", slog.Any("error", err))
+			return inboundSettings, nil
+		}
+
+		for _, trojanClient := range trojanSettings.Clients {
+			clients = append(clients, ClientSettings{
+				Email:    trojanClient.Email,
+				Password: trojanClient.Password,
+				Flow:     trojanClient.Flow,
+				Enable:   true,
+			})
+		}
+
+	case "shadowsocks":
+		var ssSettings ShadowsocksSettings
+		if err := json.Unmarshal([]byte(rawInbound.Settings), &ssSettings); err != nil {
+			c.logger.Error("Failed to unmarshal Shadowsocks settings", slog.Any("error", err))
+			return inboundSettings, nil
+		}
+
+		for _, ssClient := range ssSettings.Clients {
+			method := ssClient.Method
+			if method == "" {
+				method = ssSettings.Method
+			}
+
+			clients = append(clients, ClientSettings{
+				Email:    ssClient.Email,
+				Password: ssClient.Password,
+				Method:   method,
+				Enable:   true,
+			})
 		}
 	}
 
-	// Assemble the final InboundSettings struct
+	// Add parsed clients to inboundSettings
+	inboundSettings.Clients = clients
+
+	c.logger.InfoContext(ctx, "Successfully parsed inbound with clients",
+		slog.Int("inbound_id", inboundID),
+		slog.String("protocol", rawInbound.Protocol),
+		slog.Int("client_count", len(clients)))
+
+	return inboundSettings, nil
+}
+
+// GetClientSettings получает настройки клиента из inbound по его email или id
+func (c *Client) GetClientSettings(ctx context.Context, inboundID int, clientIDorEmail string) (*ClientSettings, error) {
+	c.logger.InfoContext(ctx, "Получение настроек клиента",
+		slog.Int("inbound_id", inboundID),
+		slog.String("client_id", clientIDorEmail))
+
+	// Получаем настройки инбаунда
+	inbound, err := c.GetInbound(ctx, inboundID)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка получения inbound: %w", err)
+	}
+
+	// Перебираем клиентов в настройках и ищем с нужным ID или email
+	for _, client := range inbound.Clients {
+		// Проверяем совпадение по email
+		if client.Email == clientIDorEmail {
+			c.logger.InfoContext(ctx, "Найден клиент по email",
+				slog.String("email", client.Email),
+				slog.String("uuid", client.UUID))
+			return &client, nil
+		}
+
+		// Проверяем совпадение по ID (UUID)
+		// В зависимости от протокола, ID может быть в разных полях
+		switch strings.ToLower(inbound.Protocol) {
+		case "vless", "vmess":
+			if client.UUID == clientIDorEmail {
+				c.logger.InfoContext(ctx, "Найден клиент по UUID",
+					slog.String("uuid", client.UUID),
+					slog.String("email", client.Email))
+				return &client, nil
+			}
+		case "trojan", "shadowsocks":
+			if client.Password == clientIDorEmail {
+				c.logger.InfoContext(ctx, "Найден клиент по Password",
+					slog.String("password", client.Password),
+					slog.String("email", client.Email))
+				return &client, nil
+			}
+		}
+	}
+
+	c.logger.WarnContext(ctx, "Клиент не найден в inbound",
+		slog.Int("inbound_id", inboundID),
+		slog.String("client_id", clientIDorEmail),
+		slog.Int("client_count", len(inbound.Clients)))
+
+	return nil, fmt.Errorf("клиент %s не найден в inbound %d", clientIDorEmail, inboundID)
+}
+
+// GetClientQRCode получает QR-код для клиента напрямую из 3x-ui
+func (c *Client) GetClientQRCode(ctx context.Context, email string, protocol string) ([]byte, error) {
+	c.logger.InfoContext(ctx, "Генерация QR-кода",
+		slog.String("email", email),
+		slog.String("protocol", protocol))
+
+	// Попробуем сначала получить QR код напрямую через API 3x-ui
+	if qrBytes, err := c.getQRCodeFromAPI(ctx, email); err == nil {
+		c.logger.InfoContext(ctx, "Успешно получен QR-код через API 3x-ui",
+			slog.String("email", email),
+			slog.Int("qr_size_bytes", len(qrBytes)))
+		return qrBytes, nil
+	} else {
+		c.logger.InfoContext(ctx, "Не удалось получить QR-код через API, генерируем локально",
+			slog.String("email", email),
+			slog.Any("error", err))
+	}
+
+	// Если не удалось получить QR через API, генерируем локально
+	c.logger.InfoContext(ctx, "Локальная генерация QR-кода", slog.String("email", email))
+
+	// Получаем конфигурационную ссылку для этого клиента
+	configLink, err := c.GetClientConfigLink(ctx, email, protocol)
+	if err != nil {
+		c.logger.ErrorContext(ctx, "Не удалось получить ссылку конфигурации для QR-кода",
+			slog.String("email", email),
+			slog.String("protocol", protocol),
+			slog.Any("error", err))
+		return nil, fmt.Errorf("не удалось получить ссылку конфигурации для QR-кода: %w", err)
+	}
+
+	c.logger.InfoContext(ctx, "Успешно получена ссылка для QR-кода",
+		slog.String("email", email),
+		slog.String("config_link", configLink))
+
+	// Генерируем QR-код из ссылки с помощью библиотеки qrcode
+	qrCode, err := qrcode.Encode(configLink, qrcode.Medium, 256)
+	if err != nil {
+		c.logger.ErrorContext(ctx, "Ошибка генерации QR-кода",
+			slog.String("email", email),
+			slog.String("config_link", configLink),
+			slog.Any("error", err))
+		return nil, fmt.Errorf("ошибка генерации QR-кода: %w", err)
+	}
+
+	c.logger.InfoContext(ctx, "QR-код успешно сгенерирован локально",
+		slog.String("email", email),
+		slog.Int("qr_size_bytes", len(qrCode)))
+	return qrCode, nil
+}
+
+// getQRCodeFromAPI пытается получить QR-код напрямую через API 3x-ui
+func (c *Client) getQRCodeFromAPI(ctx context.Context, email string) ([]byte, error) {
+	// Проверяем авторизацию
+	if err := c.ensureLogin(ctx); err != nil {
+		return nil, err
+	}
+
+	// Получаем все inbound'ы для поиска клиента
+	inbounds, err := c.GetAllInbounds(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка получения inbounds: %w", err)
+	}
+
+	// Ищем клиента и его inbound
+	var foundInboundID int
+	for _, inbound := range inbounds {
+		// Проверяем, содержит ли inbound клиента с нужным email
+		if strings.Contains(inbound.Settings, fmt.Sprintf(`"email":"%s"`, email)) {
+			foundInboundID = inbound.ID
+			c.logger.InfoContext(ctx, "Найден клиент в inbound",
+				slog.String("email", email),
+				slog.Int("inbound_id", inbound.ID))
+			break
+		}
+	}
+
+	if foundInboundID == 0 {
+		c.logger.WarnContext(ctx, "Не удалось найти клиента по email в inbounds",
+			slog.String("email", email))
+		return nil, fmt.Errorf("клиент с email %s не найден в inbounds", email)
+	}
+
+	// Пробуем разные варианты URL для получения QR-кода
+	// 1. Вариант для 3x-ui
+	qrURL := c.baseURL.ResolveReference(&url.URL{
+		Path: fmt.Sprintf("/panel/inbound/%d/getClientQrcode/%s", foundInboundID, url.PathEscape(email)),
+	})
+
+	c.logger.InfoContext(ctx, "Запрос QR-кода через API (вариант 1)",
+		slog.String("url", qrURL.String()),
+		slog.String("email", email))
+
+	// Создаем запрос с контекстом и cookies
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, qrURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка создания запроса: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		c.logger.WarnContext(ctx, "Ошибка запроса QR-кода (вариант 1)",
+			slog.String("url", qrURL.String()),
+			slog.Any("error", err))
+
+		// Пробуем второй вариант URL (x-ui)
+		qrURL2 := c.baseURL.ResolveReference(&url.URL{
+			Path: fmt.Sprintf("/xui/inbound/%d/getClientQrcode/%s", foundInboundID, url.PathEscape(email)),
+		})
+
+		c.logger.InfoContext(ctx, "Запрос QR-кода через API (вариант 2)",
+			slog.String("url", qrURL2.String()),
+			slog.String("email", email))
+
+		req2, err := http.NewRequestWithContext(ctx, http.MethodGet, qrURL2.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка создания запроса: %w", err)
+		}
+
+		resp2, err := c.httpClient.Do(req2)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка выполнения запроса (оба варианта): %w", err)
+		}
+		resp = resp2
+	}
+	defer resp.Body.Close()
+
+	// Проверяем код ответа
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		errMsg := fmt.Sprintf("сервер вернул код %d при запросе QR-кода: %s",
+			resp.StatusCode, string(bodyBytes))
+		c.logger.WarnContext(ctx, errMsg,
+			slog.String("email", email),
+			slog.String("content_type", resp.Header.Get("Content-Type")))
+		return nil, fmt.Errorf(errMsg)
+	}
+
+	// Проверяем тип содержимого ответа
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "image/") {
+		// Если это не изображение, возможно это JSON с ошибкой
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		c.logger.WarnContext(ctx, "Сервер вернул неожиданный тип контента",
+			slog.String("email", email),
+			slog.String("content_type", contentType),
+			slog.String("body", string(bodyBytes)))
+		return nil, fmt.Errorf("сервер вернул неожиданный тип контента: %s, тело: %s", contentType, string(bodyBytes))
+	}
+
+	// Читаем изображение QR-кода из ответа
+	qrBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка чтения данных QR-кода: %w", err)
+	}
+
+	if len(qrBytes) == 0 {
+		return nil, fmt.Errorf("получены пустые данные QR-кода")
+	}
+
+	c.logger.InfoContext(ctx, "Успешно получен QR-код",
+		slog.String("email", email),
+		slog.Int("size_bytes", len(qrBytes)),
+		slog.String("content_type", contentType))
+	return qrBytes, nil
+}
+
+// GetClientConfigLink генерирует конфигурационную ссылку для клиента
+func (c *Client) GetClientConfigLink(ctx context.Context, clientID string, protocol string) (string, error) {
+	// Получаем все inbound'ы
+	inbounds, err := c.GetAllInbounds(ctx)
+	if err != nil {
+		return "", fmt.Errorf("ошибка получения inbounds: %w", err)
+	}
+
+	// Ищем клиента в inbound'ах
+	var inboundID int
+	var clientSettings *ClientSettings
+
+	for _, inbound := range inbounds {
+		// Проверяем наличие клиента
+		settings, err := c.GetClientSettings(ctx, inbound.ID, clientID)
+		if err == nil && settings != nil {
+			inboundID = inbound.ID
+			clientSettings = settings
+			break
+		}
+	}
+
+	if inboundID == 0 || clientSettings == nil {
+		return "", fmt.Errorf("клиент %s не найден ни в одном inbound", clientID)
+	}
+
+	// Получаем настройки inbound
+	inboundSettings, err := c.GetInbound(ctx, inboundID)
+	if err != nil {
+		return "", fmt.Errorf("ошибка получения настроек inbound: %w", err)
+	}
+
+	// Для формирования правильной ссылки используем публичный хост сервера
+	// Берем только имя хоста без протокола
+	hostname := c.baseURL.Hostname() // Например, 38.244.152.237
+
+	// Избавляемся от любых протоколов в hostname, если они по какой-то причине остались
+	hostname = strings.TrimPrefix(hostname, "http://")
+	hostname = strings.TrimPrefix(hostname, "https://")
+
+	// Убираем порты из имени хоста, если они есть
+	if idx := strings.Index(hostname, ":"); idx != -1 {
+		hostname = hostname[:idx]
+	}
+
+	// Используем порт из inbound настроек, а не порт API
+	port := inboundSettings.Port // Порт из inbound настроек - например, 43455
+
+	// Проверяем протокол
+	inboundProtocol := strings.ToLower(inboundSettings.Protocol)
+	requestedProtocol := strings.ToLower(protocol)
+
+	if requestedProtocol != "" && requestedProtocol != inboundProtocol {
+		c.logger.WarnContext(ctx, "Запрошенный протокол не соответствует протоколу inbound",
+			slog.String("requested", requestedProtocol),
+			slog.String("actual", inboundProtocol))
+	}
+
+	var configLink string
+
+	switch inboundProtocol {
+	case "vless":
+		// Формат: vless://UUID@HOSTNAME:PORT?type=NETWORK&security=SECURITY...#REMARK
+		u := url.URL{
+			Scheme: "vless",
+			User:   url.User(clientSettings.UUID),
+			Host:   fmt.Sprintf("%s:%d", hostname, port),
+		}
+
+		q := u.Query()
+		q.Set("type", inboundSettings.Network)
+
+		// Настройки сети
+		switch inboundSettings.Network {
+		case "ws":
+			if inboundSettings.WSPath != "" {
+				q.Set("path", inboundSettings.WSPath)
+			}
+			if inboundSettings.WSHost != "" {
+				q.Set("host", inboundSettings.WSHost)
+			}
+		case "grpc":
+			if inboundSettings.GRPCService != "" {
+				q.Set("serviceName", inboundSettings.GRPCService)
+			}
+		}
+
+		// Настройки безопасности
+		q.Set("security", inboundSettings.Security)
+
+		if inboundSettings.Security == "tls" {
+			if inboundSettings.SNI != "" {
+				q.Set("sni", inboundSettings.SNI)
+			}
+			if inboundSettings.Fingerprint != "" {
+				q.Set("fp", inboundSettings.Fingerprint)
+			}
+		}
+
+		if inboundSettings.Security == "reality" {
+			if inboundSettings.PublicKey != "" {
+				q.Set("pbk", inboundSettings.PublicKey)
+			}
+			if inboundSettings.ShortID != "" {
+				q.Set("sid", inboundSettings.ShortID)
+			}
+			if inboundSettings.SNI != "" {
+				q.Set("sni", inboundSettings.SNI)
+			}
+			if inboundSettings.SpiderX != "" {
+				q.Set("spx", inboundSettings.SpiderX)
+			}
+		}
+
+		if clientSettings.Flow != "" {
+			q.Set("flow", clientSettings.Flow)
+		}
+
+		u.RawQuery = q.Encode()
+
+		// Используем понятное имя для пользователя
+		remark := clientSettings.Email
+		if clientSettings.TelegramID != "" && clientSettings.SubscriptionID != "" {
+			remark = fmt.Sprintf("user_%s_%s", clientSettings.TelegramID, clientSettings.SubscriptionID)
+		}
+
+		u.Fragment = remark
+
+		configLink = u.String()
+
+	case "vmess":
+		// Для VMess используем формат конфигурации JSON, закодированный в base64
+		vmessConfig := map[string]interface{}{
+			"v":    "2",
+			"ps":   clientSettings.Email,
+			"add":  hostname,
+			"port": port,
+			"id":   clientSettings.UUID,
+			"aid":  0, // AlterId обычно 0 в новых версиях
+			"net":  inboundSettings.Network,
+			"type": "none",
+		}
+
+		// Настройки безопасности
+		if inboundSettings.Security != "none" {
+			vmessConfig["tls"] = inboundSettings.Security
+		}
+
+		// Настройки для разных типов сетей
+		switch inboundSettings.Network {
+		case "ws":
+			vmessConfig["path"] = inboundSettings.WSPath
+			if inboundSettings.WSHost != "" {
+				vmessConfig["host"] = inboundSettings.WSHost
+			}
+		case "grpc":
+			vmessConfig["path"] = inboundSettings.GRPCService
+			vmessConfig["type"] = "gun"
+		}
+
+		// Кодируем в JSON
+		configJSON, err := json.Marshal(vmessConfig)
+		if err != nil {
+			return "", fmt.Errorf("ошибка маршалинга VMess конфигурации: %w", err)
+		}
+
+		// Кодируем в base64
+		configBase64 := base64.StdEncoding.EncodeToString(configJSON)
+		configLink = "vmess://" + configBase64
+
+	case "trojan":
+		// Формат: trojan://PASSWORD@HOSTNAME:PORT?security=SECURITY...#REMARK
+		password := clientSettings.Password
+		if password == "" {
+			password = clientSettings.UUID // Иногда UUID используется как пароль
+		}
+
+		u := url.URL{
+			Scheme: "trojan",
+			User:   url.User(password),
+			Host:   fmt.Sprintf("%s:%d", hostname, port),
+		}
+
+		q := u.Query()
+
+		// Настройки безопасности
+		if inboundSettings.Security != "none" {
+			q.Set("security", inboundSettings.Security)
+		}
+
+		if inboundSettings.SNI != "" {
+			q.Set("sni", inboundSettings.SNI)
+		}
+
+		// Настройки сети
+		if inboundSettings.Network != "tcp" {
+			q.Set("type", inboundSettings.Network)
+
+			switch inboundSettings.Network {
+			case "ws":
+				if inboundSettings.WSPath != "" {
+					q.Set("path", inboundSettings.WSPath)
+				}
+				if inboundSettings.WSHost != "" {
+					q.Set("host", inboundSettings.WSHost)
+				}
+			case "grpc":
+				if inboundSettings.GRPCService != "" {
+					q.Set("serviceName", inboundSettings.GRPCService)
+				}
+			}
+		}
+
+		u.RawQuery = q.Encode()
+
+		// Используем понятное имя для пользователя
+		remark := clientSettings.Email
+		if clientSettings.TelegramID != "" && clientSettings.SubscriptionID != "" {
+			remark = fmt.Sprintf("user_%s_%s", clientSettings.TelegramID, clientSettings.SubscriptionID)
+		}
+
+		u.Fragment = remark
+
+		configLink = u.String()
+
+	case "shadowsocks":
+		// Формат: ss://BASE64(METHOD:PASSWORD)@HOSTNAME:PORT#REMARK
+		method := clientSettings.Method
+		if method == "" {
+			method = "aes-256-gcm" // Дефолтный метод, если не указан
+		}
+
+		password := clientSettings.Password
+		if password == "" {
+			password = clientSettings.UUID
+		}
+
+		// Кодируем метод и пароль
+		methodPass := base64.StdEncoding.EncodeToString([]byte(method + ":" + password))
+
+		u := url.URL{
+			Scheme: "ss",
+			User:   url.User(methodPass),
+			Host:   fmt.Sprintf("%s:%d", hostname, port),
+		}
+
+		// Используем понятное имя для пользователя
+		remark := clientSettings.Email
+		if clientSettings.TelegramID != "" && clientSettings.SubscriptionID != "" {
+			remark = fmt.Sprintf("user_%s_%s", clientSettings.TelegramID, clientSettings.SubscriptionID)
+		}
+
+		u.Fragment = remark
+
+		configLink = u.String()
+
+	default:
+		return "", fmt.Errorf("неподдерживаемый протокол для генерации конфигурации: %s", inboundProtocol)
+	}
+
+	return configLink, nil
+}
+
+// GetClientsByMetadata ищет клиентов в инбаундах с учетом метаданных
+func (c *Client) GetClientsByMetadata(ctx context.Context, tgID string, subID string) (*ClientSettings, int, error) {
+	c.logger.InfoContext(ctx, "Поиск клиентов по метаданным",
+		slog.String("tg_id", tgID),
+		slog.String("sub_id", subID))
+
+	// Получаем все inbound'ы
+	inbounds, err := c.GetAllInbounds(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("ошибка получения inbounds: %w", err)
+	}
+
+	// Ищем клиента с совпадающими metadata во всех инбаундах
+	for _, inbound := range inbounds {
+		settings := ""
+		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+			c.logger.WarnContext(ctx, "Не удалось распарсить настройки инбаунда",
+				slog.Int("inbound_id", inbound.ID),
+				slog.Any("error", err))
+			continue
+		}
+
+		// Поиск клиентов по различным протоколам
+		switch inbound.Protocol {
+		case "vless", "vmess", "trojan", "shadowsocks":
+			// Проверяем всех клиентов в инбаунде
+			var clientEmail string
+			var clientFound bool
+
+			// Пытаемся найти клиента, у которого tgId и subId совпадают с искомыми
+			if strings.Contains(settings, fmt.Sprintf(`"tgId":"%s"`, tgID)) &&
+				strings.Contains(settings, fmt.Sprintf(`"subId":"%s"`, subID)) {
+				c.logger.InfoContext(ctx, "Найдены совпадения в метаданных клиента",
+					slog.Int("inbound_id", inbound.ID))
+
+				// Получаем клиентов этого инбаунда для более точного поиска
+				if inbound.ClientStats != nil {
+					for _, client := range inbound.ClientStats {
+						if client.TgID == tgID && client.SubID == subID {
+							clientEmail = client.Email
+							clientFound = true
+							c.logger.InfoContext(ctx, "Найден клиент по tgId и subId",
+								slog.Int("inbound_id", inbound.ID),
+								slog.String("email", clientEmail))
+							break
+						}
+					}
+				}
+
+				// Если нашли клиента, получаем его полные настройки
+				if clientFound {
+					settings, err := c.GetClientSettings(ctx, inbound.ID, clientEmail)
+					if err == nil && settings != nil {
+						return settings, inbound.ID, nil
+					}
+				}
+			}
+		}
+	}
+
+	return nil, 0, ErrClientNotFound
+}
+
+// UpdateClientMetadata обновляет метаданные клиента (TelegramID и SubscriptionID)
+func (c *Client) UpdateClientMetadata(ctx context.Context, email string, tgID string, subID string) error {
+	c.logger.InfoContext(ctx, "Обновление метаданных клиента",
+		slog.String("email", email),
+		slog.String("tg_id", tgID),
+		slog.String("sub_id", subID))
+
+	// Получаем все inbound'ы для поиска клиента
+	inbounds, err := c.GetAllInbounds(ctx)
+	if err != nil {
+		return fmt.Errorf("ошибка получения inbounds: %w", err)
+	}
+
+	// Ищем клиента и его inbound
+	var foundInboundID int
+	var clientSettings *ClientSettings
+
+	for _, inbound := range inbounds {
+		// Проверяем наличие клиента
+		settings, err := c.GetClientSettings(ctx, inbound.ID, email)
+		if err == nil && settings != nil {
+			foundInboundID = inbound.ID
+			clientSettings = settings
+			c.logger.InfoContext(ctx, "Найден клиент для обновления",
+				slog.String("email", email),
+				slog.Int("inbound_id", inbound.ID))
+			break
+		}
+	}
+
+	if foundInboundID == 0 || clientSettings == nil {
+		return fmt.Errorf("клиент %s не найден ни в одном inbound", email)
+	}
+
+	// Обновляем метаданные
+	clientSettings.TelegramID = tgID
+	clientSettings.SubscriptionID = subID
+
+	// Обновляем клиента в системе
+	err = c.UpdateClient(ctx, foundInboundID, clientSettings.UUID, *clientSettings)
+	if err != nil {
+		c.logger.ErrorContext(ctx, "Ошибка обновления метаданных клиента",
+			slog.String("email", email),
+			slog.String("tg_id", tgID),
+			slog.String("sub_id", subID),
+			slog.Any("error", err))
+		return fmt.Errorf("ошибка обновления клиента: %w", err)
+	}
+
+	c.logger.InfoContext(ctx, "Метаданные клиента успешно обновлены",
+		slog.String("email", email),
+		slog.String("tg_id", tgID),
+		slog.String("sub_id", subID))
+	return nil
+}
+
+// parseInboundRaw парсит сырые данные inbound в структурированный формат InboundSettings
+func (c *Client) parseInboundRaw(rawInbound *InboundRaw) (*InboundSettings, error) {
+	// Разбираем streamSettings
+	var streamSettings StreamSettings
+	if err := json.Unmarshal([]byte(rawInbound.StreamSettings), &streamSettings); err != nil {
+		c.logger.Error("Failed to unmarshal inbound streamSettings JSON",
+			slog.Int("inbound_id", rawInbound.ID),
+			slog.String("json_string", rawInbound.StreamSettings),
+			slog.Any("error", err))
+		// Продолжаем без stream settings, заполним что можно
+	}
+
+	// Собираем результирующую структуру
 	settings := &InboundSettings{
 		ID:       rawInbound.ID,
 		Remark:   rawInbound.Remark,
@@ -359,110 +1350,46 @@ func (c *Client) GetInbound(ctx context.Context, inboundID int) (*InboundSetting
 		Security: streamSettings.Security,
 	}
 
+	// Заполняем поля TLS настроек, если они есть
 	if streamSettings.TLSSettings != nil {
 		settings.SNI = streamSettings.TLSSettings.ServerName
 		settings.Fingerprint = streamSettings.TLSSettings.Fingerprint
 	}
+
+	// Заполняем поля REALITY настроек, если они есть
 	if streamSettings.RealitySettings != nil {
-		settings.Security = "reality" // Explicitly set security if reality settings exist
+		settings.Security = "reality" // Явно устанавливаем security если есть reality settings
 		settings.PublicKey = streamSettings.RealitySettings.PublicKey
 		settings.ShortID = streamSettings.RealitySettings.ShortID
 		settings.SpiderX = streamSettings.RealitySettings.SpiderX
-		// Use first server name as SNI for REALITY if TLS SNI is not set
+		// Используем первый ServerName как SNI для REALITY, если TLS SNI не задан
 		if settings.SNI == "" && len(streamSettings.RealitySettings.ServerNames) > 0 {
 			settings.SNI = streamSettings.RealitySettings.ServerNames[0]
 		}
 	}
+
+	// Заполняем поля WebSocket настроек, если они есть
 	if streamSettings.WSSettings != nil {
 		settings.WSPath = streamSettings.WSSettings.Path
 		if streamSettings.WSSettings.Headers != nil {
-			settings.WSHost = streamSettings.WSSettings.Headers["Host"] // Common practice
+			settings.WSHost = streamSettings.WSSettings.Headers["Host"] // Распространенная практика
 		}
 	}
+
+	// Заполняем поля gRPC настроек, если они есть
 	if streamSettings.GrpcSettings != nil {
 		settings.GRPCService = streamSettings.GrpcSettings.ServiceName
 	}
 
-	c.logger.Info("Successfully retrieved and parsed inbound settings", slog.Int("inbound_id", inboundID), slog.String("remark", settings.Remark))
+	// Добавляем статистику клиентов, если они есть
+	settings.ClientStats = rawInbound.ClientStats
+
+	c.logger.Info("Successfully parsed inbound settings",
+		slog.Int("inbound_id", settings.ID),
+		slog.String("remark", settings.Remark))
+
 	return settings, nil
 }
-
-// GetClientSettings retrieves the specific settings for a client within an inbound.
-// It fetches the inbound details and parses the client list.
-func (c *Client) GetClientSettings(ctx context.Context, inboundID int, clientEmail string) (*ClientSettings, error) {
-	endpoint := path.Join(c.apiPath, "get", strconv.Itoa(inboundID))
-	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
-
-	resp, err := c.doRequestWithLogin(ctx, http.MethodGet, apiURL.String(), nil)
-	if err != nil {
-		return nil, err // Error from doRequestWithLogin
-	}
-	defer resp.Body.Close()
-
-	var genericResp GenericResponse
-	if err := json.NewDecoder(resp.Body).Decode(&genericResp); err != nil {
-		return nil, fmt.Errorf("failed to decode get inbound response for client settings: %w", err)
-	}
-
-	if !genericResp.Success {
-		// Don't return ErrInboundNotFound here, let the main error handle it
-		c.logger.Error("Failed to get inbound details while fetching client settings", slog.Int("inbound_id", inboundID), slog.String("msg", genericResp.Msg))
-		return nil, fmt.Errorf("%w: %s", ErrOperationFailed, genericResp.Msg)
-	}
-	if genericResp.Obj == nil {
-		return nil, ErrInboundNotFound // Or a different error? Inbound exists but obj is nil
-	}
-
-	// Marshal Obj back to JSON and unmarshal into InboundRaw
-	objBytes, err := json.Marshal(genericResp.Obj)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal inbound obj for client settings: %w", err)
-	}
-
-	var rawInbound InboundRaw
-	if err := json.Unmarshal(objBytes, &rawInbound); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal inbound obj for client settings: %w", err)
-	}
-
-	// Parse the settings JSON based on protocol
-	// TODO: Handle other protocols
-	if rawInbound.Protocol == "vless" {
-		var vlessSettings VlessSettings
-		if err := json.Unmarshal([]byte(rawInbound.Settings), &vlessSettings); err != nil {
-			c.logger.Error("Failed to unmarshal inbound vless settings JSON for client lookup", slog.Int("inbound_id", inboundID), slog.Any("error", err))
-			return nil, fmt.Errorf("failed to parse inbound settings: %w", err)
-		}
-
-		// Find the client by email
-		for _, client := range vlessSettings.Clients {
-			if client.Email == clientEmail {
-				c.logger.Info("Found client settings by email", slog.Int("inbound_id", inboundID), slog.String("email", clientEmail))
-				// Map VlessClientSetting to the more generic ClientSettings
-				// Note: This assumes ClientSettings has the necessary fields (like UUID/ID, Flow)
-				// We used 'id' in VlessClientSetting which corresponds to UUID
-				foundClient := &ClientSettings{
-					Email: client.Email,
-					UUID:  client.ID, // Map ID to UUID
-					Flow:  client.Flow,
-					// Enable, TotalGB, ExpiryTime are often managed separately or via GetClientTraffic
-					// We might need to merge data if necessary, but for config link, UUID/Flow are key.
-					Enable: true, // Assume enabled if found? Or get from GetClientTraffic?
-				}
-				return foundClient, nil
-			}
-		}
-		// Client not found in the list
-		c.logger.Warn("Client email not found in inbound settings", slog.Int("inbound_id", inboundID), slog.String("email", clientEmail))
-		return nil, ErrClientNotFound
-
-	} else {
-		// Handle other protocols (VMess, Trojan, etc.) here
-		c.logger.Error("GetClientSettings not implemented for protocol", slog.String("protocol", rawInbound.Protocol))
-		return nil, fmt.Errorf("getting client settings for protocol '%s' not implemented", rawInbound.Protocol)
-	}
-}
-
-// TODO: Implement functions to generate config links (vmess://, vless://, etc.) based on Inbound and Client settings.
 
 // --- Helper Methods ---
 
@@ -621,7 +1548,31 @@ func (c *Client) doRequestWithLogin(ctx context.Context, method, urlStr string, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close() // Close body after reading
-		c.logger.Error("x-ui API request failed", slog.String("method", method), slog.String("url", urlStr), slog.Int("status_code", resp.StatusCode), slog.String("body", string(bodyBytes)))
+
+		// Для статусов 500 пытаемся прочитать и логировать детали ошибки
+		if resp.StatusCode == http.StatusInternalServerError && len(bodyBytes) > 0 {
+			var errorResp map[string]interface{}
+			if err := json.Unmarshal(bodyBytes, &errorResp); err == nil {
+				// Если удалось разобрать JSON, логируем структурированную ошибку
+				c.logger.Error("Server returned error 500",
+					slog.String("method", method),
+					slog.String("url", urlStr),
+					slog.Any("error_details", errorResp))
+			} else {
+				// Если не удалось разобрать JSON, логируем как строку
+				c.logger.Error("Server returned error 500",
+					slog.String("method", method),
+					slog.String("url", urlStr),
+					slog.String("error_body", string(bodyBytes)))
+			}
+		} else {
+			c.logger.Error("x-ui API request failed",
+				slog.String("method", method),
+				slog.String("url", urlStr),
+				slog.Int("status_code", resp.StatusCode),
+				slog.String("body", string(bodyBytes)))
+		}
+
 		return nil, fmt.Errorf("%w: unexpected status code %d", ErrRequestFailed, resp.StatusCode)
 	}
 

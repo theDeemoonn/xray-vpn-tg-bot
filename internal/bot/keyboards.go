@@ -8,16 +8,46 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// --- Дополнительные константы для клавиатур ---
+// --- Константы для кнопок главного меню ---
 const (
-	callbackActionSupport = "support"
+	MainMenuButtonMySubscriptions = "🔑 Мои подписки"
+	MainMenuButtonBuySubscription = "🛒 Купить подписку"
+	MainMenuButtonInstructions    = "📱 Инструкции"
+	MainMenuButtonFAQ             = "❓ FAQ"
+	MainMenuButtonReferral        = "🤝 Реферальная программа"
+	MainMenuButtonSupport         = "💬 Поддержка"
+	MainMenuButtonAdmin           = "👑 Админ-панель"
+)
 
-	// Кнопки для главного меню FAQ/Инструкций
-	buttonTextFAQ          = "❓ Частые вопросы (FAQ)"
-	buttonTextInstructions = "📱 Инструкции по настройке"
-	buttonTextSupport      = "💬 Связаться с поддержкой"
+// --- Константы для кнопок админ-панели ---
+const (
+	AdminMenuButtonStats      = "📊 Статистика"
+	AdminMenuButtonServers    = "⚙️ Управление серверами"
+	AdminMenuButtonUsers      = "👤 Управление пользователями"
+	AdminMenuButtonPlans      = "📋 Управление тарифами"
+	AdminMenuButtonBroadcast  = "📢 Рассылка"
+	AdminMenuButtonSettings   = "🔧 Настройки"
+	AdminMenuButtonBackToMain = "⬅️ Главное меню"
+)
 
-	// Префиксы callback data
+// --- Константы для кнопок управления серверами ---
+const (
+	AdminServersButtonAdd  = "➕ Добавить сервер"
+	AdminServersButtonList = "📜 Список серверов"
+	AdminServersButtonBack = "⬅️ Назад в админ-панель"
+)
+
+// --- Префиксы и константы callback data ---
+const (
+	// Основные действия
+	callbackActionSelectPlan      = "plan:"
+	callbackActionSelectServer    = "srv_sel:"
+	callbackActionConfigureServer = "srv_conf:" // subscriptionID:serverID
+	callbackActionGetConfig       = "get_cfg:"  // subscriptionID
+	callbackActionAdmin           = "admin:"
+	callbackActionSupport         = "support"
+
+	// FAQ & Инструкции
 	callbackPrefixFAQCategory         = "faq_cat:"
 	callbackPrefixFAQQuestion         = "faq_q:"
 	callbackPrefixInstructionPlatform = "instr_plat:"
@@ -25,6 +55,48 @@ const (
 	callbackPrefixBackToFAQ           = "back_faq"
 	callbackPrefixBackToInstructions  = "back_instr"
 	callbackPrefixBackToHelpRoot      = "back_help"
+
+	// Обработчики вызываемые в bot.go
+	callbackActionFAQCategory         = callbackPrefixFAQCategory
+	callbackActionFAQQuestion         = callbackPrefixFAQQuestion
+	callbackActionInstructionPlatform = callbackPrefixInstructionPlatform
+	callbackActionInstructionDetails  = callbackPrefixInstructionDetails
+	callbackActionBackToFAQ           = callbackPrefixBackToFAQ
+	callbackActionBackToInstructions  = callbackPrefixBackToInstructions
+	callbackActionBackToHelpRoot      = callbackPrefixBackToHelpRoot
+
+	// Тексты кнопок в HelpRootKeyboard
+	buttonTextInstructions = "📱 Инструкции по установке"
+	buttonTextFAQ          = "❓ Часто задаваемые вопросы"
+	buttonTextSupport      = "💬 Связаться с поддержкой"
+
+	// Админ: Серверы
+	callbackPrefixAdminServers       = "adm_srv:"
+	callbackAdminServersActionAdd    = callbackPrefixAdminServers + "add"
+	callbackAdminServersActionList   = callbackPrefixAdminServers + "list"
+	callbackAdminServersActionView   = callbackPrefixAdminServers + "view:"   // view:<server_id>
+	callbackAdminServersActionDelete = callbackPrefixAdminServers + "del:"    // del:<server_id>
+	callbackAdminServersActionToggle = callbackPrefixAdminServers + "toggle:" // toggle:<server_id>
+	callbackAdminServersBackToAdmin  = callbackPrefixAdminServers + "back"
+
+	// Константы для диалога добавления сервера
+	callbackServerAddStepCancel  = callbackPrefixAdminServers + "add_cancel"
+	callbackServerAddStepConfirm = callbackPrefixAdminServers + "add_confirm"
+
+	// Состояния диалога добавления сервера
+	serverAddStateWaitName       = "server_add_wait_name"
+	serverAddStateWaitApiHost    = "server_add_wait_api_host"
+	serverAddStateWaitPublicHost = "server_add_wait_public_host"
+	serverAddStateWaitUsername   = "server_add_wait_username"
+	serverAddStateWaitPassword   = "server_add_wait_password"
+	serverAddStateWaitLocation   = "server_add_wait_location"
+	serverAddStateWaitInbound    = "server_add_wait_inbound"
+	serverAddStateConfirmation   = "server_add_confirmation"
+
+	// Клавиатуры для добавления сервера
+	serverAddCancelButton   = "❌ Отменить"
+	serverAddConfirmButton  = "✅ Подтвердить"
+	serverAddDefaultInbound = 1 // Дефолтный inbound ID
 )
 
 // mainMenuKeyboard возвращает основную клавиатуру меню
@@ -241,9 +313,40 @@ func AdminMenuKeyboard() *models.ReplyKeyboardMarkup {
 	return &models.ReplyKeyboardMarkup{
 		ResizeKeyboard: true,
 		Keyboard: [][]models.KeyboardButton{
-			{{Text: "📊 Статистика"}, {Text: "⚙️ Управление серверами"}},
-			{{Text: "👤 Управление пользователями"}},
-			{{Text: "⬅️ Главное меню"}}, // Button to return to the main user menu
+			{{Text: AdminMenuButtonStats}, {Text: AdminMenuButtonServers}},
+			{{Text: AdminMenuButtonUsers}, {Text: AdminMenuButtonPlans}},
+			{{Text: AdminMenuButtonBackToMain}},
 		},
 	}
 }
+
+// serverManagementKeyboard создает inline клавиатуру для управления серверами
+func serverManagementKeyboard() models.InlineKeyboardMarkup {
+	return models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: AdminServersButtonAdd, CallbackData: callbackAdminServersActionAdd},
+			},
+			{
+				{Text: AdminServersButtonList, CallbackData: callbackAdminServersActionList},
+			},
+			{
+				{Text: AdminServersButtonBack, CallbackData: callbackAdminServersBackToAdmin},
+			},
+		},
+	}
+}
+
+// createServerAddConfirmationKeyboard создает клавиатуру для подтверждения добавления сервера
+func createServerAddConfirmationKeyboard() models.InlineKeyboardMarkup {
+	return models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: serverAddConfirmButton, CallbackData: callbackServerAddStepConfirm},
+				{Text: serverAddCancelButton, CallbackData: callbackServerAddStepCancel},
+			},
+		},
+	}
+}
+
+// TODO: Добавить клавиатуры для списка серверов, просмотра/редактирования сервера, подтверждения удаления и т.д.

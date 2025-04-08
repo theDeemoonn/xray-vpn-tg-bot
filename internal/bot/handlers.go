@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,7 +15,6 @@ import (
 
 	gobot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-	qrcode "github.com/skip2/go-qrcode"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -137,7 +137,7 @@ func (b *Bot) mySubscriptionsHandler(ctx context.Context, bot *gobot.Bot, update
 	b.logger.InfoContext(ctx, "Handling 'My Subscriptions'", slog.String("user_id", user.ID.Hex()))
 
 	// Get all active subscriptions, for simplicity we'll display the first one if any
-	sub, err := b.subscriptionService.GetUserActiveSubscription(ctx, user.ID)
+	subs, err := b.subscriptionService.GetActiveSubscriptionForUser(ctx, user.ID)
 	if err != nil {
 		// If it's not specifically ErrNotFound, it's an internal error
 		if !errors.Is(err, apperrors.ErrSubscriptionNotFound) {
@@ -146,22 +146,21 @@ func (b *Bot) mySubscriptionsHandler(ctx context.Context, bot *gobot.Bot, update
 			return
 		}
 	}
-	if sub == nil {
+
+	if len(subs) == 0 {
 		b.sendUserMessage(ctx, bot, update.Message.Chat.ID, "У вас нет активных подписок. 🛒")
 		return
 	}
 
+	// Для простоты берем первую подписку
+	subDetails := subs[0]
+	sub := subDetails.Subscription
+
 	var msgText string
 	var replyMarkup models.ReplyMarkup
 
-	// Fetch plan details to show name
-	plan, planErr := b.planService.GetPlanByID(ctx, sub.PlanID)
-	planName := "Неизвестный план"
-	if planErr == nil && plan != nil {
-		planName = plan.Name
-	} else {
-		b.logger.WarnContext(ctx, "Failed to get plan details for active subscription display", slog.String("sub_id", sub.ID.Hex()), slog.String("plan_id", sub.PlanID.Hex()), slog.Any("error", planErr))
-	}
+	// Используем имя плана из деталей подписки
+	planName := subDetails.PlanName
 
 	// Format expiry date (adjust locale/format as needed)
 	loc, _ := time.LoadLocation("Europe/Moscow") // Example: Moscow timezone
@@ -483,34 +482,109 @@ func (b *Bot) handleGetConfigCallback(ctx context.Context, bot *gobot.Bot, updat
 		return
 	}
 
-	// --- Generate QR Code --- //
-	qrCodeContent := configLink
-	qrCode, err := qrcode.Encode(qrCodeContent, qrcode.Medium, 256)
+	// Логируем сгенерированную ссылку для отладки
+	b.logger.InfoContext(ctx, "Generated config link",
+		slog.String("sub_id", sub.ID.Hex()),
+		slog.String("config_link", configLink))
+
+	// --- Получаем QR-код напрямую от 3x-ui --- //
+	qrCode, err := b.subscriptionService.GetSubscriptionQRCode(ctx, sub)
 	if err != nil {
-		b.logger.ErrorContext(ctx, "Failed to generate QR code", slog.String("sub_id", sub.ID.Hex()), slog.Any("error", err))
-		// Send link without QR code
-		msg := fmt.Sprintf("Ваша ссылка для подключения:\n`%s`\n\n(Не удалось сгенерировать QR-код)", escapeMarkdownV2(configLink))
-		b.sendUserMessage(ctx, bot, chatID, msg)
+		b.logger.ErrorContext(ctx, "Failed to get QR code from 3x-ui", slog.String("sub_id", sub.ID.Hex()), slog.Any("error", err))
+		// Если не удалось получить QR-код, отправляем только ссылку
+		// Убираем клавиатуру, так как она не нужна для простого сообщения
+
+		// Экранируем специальные символы в сообщении
+		escapedConfigLink := escapeMarkdownV2(configLink)
+
+		// Проверяем результат экранирования
+		b.logger.InfoContext(ctx, "Escaped config link for markdown",
+			slog.String("original", configLink),
+			slog.String("escaped", escapedConfigLink))
+
+		// Изменяем текст, указывая на возможность копирования
+		msg := "Ваша ссылка для подключения (нажмите, чтобы скопировать):\n" +
+			"`" + escapedConfigLink + "`" +
+			"\n\n(Не удалось получить QR-код от сервера)"
+
+		messageParams := &gobot.SendMessageParams{
+			ChatID:    chatID,
+			Text:      msg,
+			ParseMode: "MarkdownV2",
+			// ReplyMarkup: keyboard, // Убрали клавиатуру
+		}
+
+		_, err := bot.SendMessage(ctx, messageParams)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send message with config link",
+				slog.String("sub_id", sub.ID.Hex()),
+				slog.Any("error", err),
+				slog.String("message_text", msg))
+			// Fallback to simple text message без форматирования
+			b.sendUserMessage(ctx, bot, chatID, fmt.Sprintf("Ваша ссылка для подключения:\n%s", configLink))
+		}
+
 		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID, Text: "Ссылка отправлена"})
 		return
 	}
 
-	// --- Send QR Code and Link --- //
-	msgText := fmt.Sprintf("Ваша ссылка для подключения:\n`%s`\n\nОтсканируйте QR-код или скопируйте ссылку.", escapeMarkdownV2(configLink))
+	// --- Отправляем QR-код от 3x-ui и ссылку --- //
+	// Экранируем специальные символы в конфигурационной ссылке
+	escapedConfigLink := escapeMarkdownV2(configLink)
 
-	// Use SendPhoto to send the QR code image
-	photoParams := &gobot.SendPhotoParams{
-		ChatID:    chatID,
-		Photo:     &models.InputFileUpload{Filename: "config_qr.png", Data: bytes.NewReader(qrCode)},
-		Caption:   msgText,
-		ParseMode: "MarkdownV2", // Caption needs parsing
+	// Проверяем результат экранирования
+	b.logger.InfoContext(ctx, "Escaped config link for QR message",
+		slog.String("original", configLink),
+		slog.String("escaped", escapedConfigLink))
+
+	// Отправляем сначала текстовое сообщение с описанием
+	firstMsgText := "Ваша ссылка для подключения:"
+	firstMsgParams := &gobot.SendMessageParams{
+		ChatID: chatID,
+		Text:   firstMsgText,
 	}
+
+	_, err = bot.SendMessage(ctx, firstMsgParams)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to send first message",
+			slog.String("sub_id", sub.ID.Hex()),
+			slog.Any("error", err))
+	}
+
+	// Отправляем второе сообщение с самой ссылкой
+	secondMsgParams := &gobot.SendMessageParams{
+		ChatID:    chatID,
+		Text:      "`" + escapedConfigLink + "`",
+		ParseMode: "MarkdownV2",
+	}
+
+	_, err = bot.SendMessage(ctx, secondMsgParams)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to send link message",
+			slog.String("sub_id", sub.ID.Hex()),
+			slog.Any("error", err),
+			slog.String("escaped_link", escapedConfigLink))
+		// Фолбэк - отправляем ссылку без форматирования
+		b.sendUserMessage(ctx, bot, chatID, configLink)
+	}
+
+	// Отправляем изображение QR-кода отдельным сообщением
+	photoParams := &gobot.SendPhotoParams{
+		ChatID:  chatID,
+		Photo:   &models.InputFileUpload{Filename: "config_qr.png", Data: bytes.NewReader(qrCode)},
+		Caption: "QR-код для подключения",
+	}
+
+	b.logger.InfoContext(ctx, "Attempting to send QR code photo",
+		slog.String("sub_id", sub.ID.Hex()),
+		slog.Int("photo_size_bytes", len(qrCode)))
 
 	_, err = bot.SendPhoto(ctx, photoParams)
 	if err != nil {
-		b.logger.ErrorContext(ctx, "Failed to send QR code photo", slog.String("sub_id", sub.ID.Hex()), slog.Any("error", err))
-		// Fallback to sending text only
-		b.sendUserMessage(ctx, bot, chatID, msgText)
+		b.logger.ErrorContext(ctx, "Failed to send QR code photo",
+			slog.String("sub_id", sub.ID.Hex()),
+			slog.Any("error", err))
+		b.sendUserMessage(ctx, bot, chatID, "Не удалось отправить QR-код")
 	}
 
 	// Answer the callback query
@@ -696,14 +770,16 @@ func (b *Bot) handleServerSelectionCallback(ctx context.Context, bot *gobot.Bot,
 	if update.CallbackQuery.Message.Message == nil {
 		b.logger.ErrorContext(ctx, "Cannot edit message after server configuration: original message is nil/inaccessible", slog.String("callback_query_id", update.CallbackQuery.ID))
 		// Send new message as fallback?
-		b.sendUserMessage(ctx, bot, chatID, fmt.Sprintf("✅ Подписка успешно настроена на сервер '%s'!", escapeMarkdownV2(serverName))) // Simple fallback
+		b.sendUserMessage(ctx, bot, chatID, fmt.Sprintf("✅ Подписка успешно настроена на сервер '%s'!", serverName)) // Simple fallback
 		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID, Text: "Сервер настроен!"})
 		return
 	}
+
+	successMessage := fmt.Sprintf("✅ Подписка успешно настроена на сервер '%s'!\n\nНажмите кнопку ниже, чтобы получить конфигурацию.", serverName)
 	editParams := &gobot.EditMessageTextParams{
 		ChatID:      chatID,
 		MessageID:   update.CallbackQuery.Message.Message.ID,
-		Text:        fmt.Sprintf("✅ Подписка успешно настроена на сервер '%s'!\n\nНажмите кнопку ниже, чтобы получить конфигурацию.", escapeMarkdownV2(serverName)),
+		Text:        escapeMarkdownV2(successMessage),
 		ParseMode:   "MarkdownV2",
 		ReplyMarkup: configMarkup,
 	}
@@ -1004,7 +1080,7 @@ func (b *Bot) defaultHandler(ctx context.Context, bot *gobot.Bot, update *models
 		return
 	}
 
-	// Handle regular unhandled messages
+	// Получаем пользователя из контекста
 	user := UserFromContext(ctx)
 	userIDHex := "unknown"
 	if user != nil {
@@ -1012,6 +1088,28 @@ func (b *Bot) defaultHandler(ctx context.Context, bot *gobot.Bot, update *models
 	}
 	chatID := update.Message.Chat.ID
 	text := update.Message.Text
+
+	// Проверяем, является ли пользователь администратором
+	if user != nil {
+		isAdmin, err := b.userService.IsAdmin(ctx, user.ID)
+		if err == nil && isAdmin {
+			// Проверка на диалог добавления сервера
+			// Предполагаем, что если пользователь получил сообщение с просьбой ввести имя сервера,
+			// то следующее его сообщение будет содержать это имя
+
+			// Проверка на ввод имени сервера после запроса
+			// Это временное решение. В идеале нужно хранить состояние диалога в базе данных или контексте
+			if text != "/cancel" && !strings.HasPrefix(text, "/") {
+				// Проверим, что это действительно часть диалога добавления сервера
+				// Для простоты MVP реализации просто направим на обработчик
+				b.logger.InfoContext(ctx, "Admin text message, treating as server name input",
+					slog.String("user_id", userIDHex), slog.String("text", text))
+
+				b.handleAdminServerTextInput(ctx, bot, update)
+				return
+			}
+		}
+	}
 
 	b.logger.InfoContext(ctx, "Received unhandled message",
 		slog.Int64("chat_id", chatID),
@@ -1222,5 +1320,549 @@ func (b *Bot) showInstructionPlatforms(ctx context.Context, bot *gobot.Bot, chat
 		if err != nil {
 			b.logger.ErrorContext(ctx, "Failed to send message for instruction platforms", slog.Any("error", err))
 		}
+	}
+}
+
+// --- Admin Panel Handlers --- //
+
+// adminPanelHandler обрабатывает запрос к админ-панели
+func (b *Bot) adminPanelHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	user := UserFromContext(ctx)
+	if user == nil {
+		b.logger.WarnContext(ctx, "User not found in context when handling admin panel")
+		b.sendUserError(ctx, bot, update.Message.Chat.ID, "Ошибка: пользователь не найден")
+		return
+	}
+
+	b.logger.InfoContext(ctx, "Handling admin panel request", slog.String("user_id", user.ID.Hex()))
+
+	// Создаем клавиатуру админ-панели
+	keyboard := &models.ReplyKeyboardMarkup{
+		ResizeKeyboard: true,
+		Keyboard: [][]models.KeyboardButton{
+			{{Text: AdminMenuButtonStats}, {Text: AdminMenuButtonServers}},
+			{{Text: AdminMenuButtonUsers}, {Text: AdminMenuButtonPlans}},
+			{{Text: AdminMenuButtonBroadcast}, {Text: AdminMenuButtonSettings}},
+			{{Text: AdminMenuButtonBackToMain}},
+		},
+	}
+
+	// Отправляем сообщение с приветствием администратора
+	params := &gobot.SendMessageParams{
+		ChatID:      update.Message.Chat.ID,
+		Text:        "👑 *Панель администратора*\n\nВыберите раздел для управления:",
+		ParseMode:   models.ParseModeMarkdown,
+		ReplyMarkup: keyboard,
+	}
+
+	_, err := bot.SendMessage(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to send admin panel message", slog.Int64("chat_id", update.Message.Chat.ID), slog.Any("error", err))
+		b.sendInternalError(ctx, bot, update.Message.Chat.ID)
+	}
+}
+
+// adminServersHandler обрабатывает запрос к разделу управления серверами
+func (b *Bot) adminServersHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	user := UserFromContext(ctx)
+	if user == nil {
+		b.logger.WarnContext(ctx, "User not found in context when handling admin servers")
+		b.sendUserError(ctx, bot, update.Message.Chat.ID, "Ошибка: пользователь не найден")
+		return
+	}
+
+	b.logger.InfoContext(ctx, "Handling admin servers request", slog.String("user_id", user.ID.Hex()))
+
+	// Создаем inline клавиатуру для управления серверами
+	inlineKeyboard := models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: AdminServersButtonAdd, CallbackData: callbackAdminServersActionAdd},
+			},
+			{
+				{Text: AdminServersButtonList, CallbackData: callbackAdminServersActionList},
+			},
+			{
+				{Text: AdminServersButtonBack, CallbackData: callbackAdminServersBackToAdmin},
+			},
+		},
+	}
+
+	// Отправляем сообщение с опциями управления серверами
+	params := &gobot.SendMessageParams{
+		ChatID:      update.Message.Chat.ID,
+		Text:        "⚙️ *Управление серверами*\n\nВыберите действие:",
+		ParseMode:   models.ParseModeMarkdown,
+		ReplyMarkup: inlineKeyboard,
+	}
+
+	_, err := bot.SendMessage(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to send admin servers message", slog.Int64("chat_id", update.Message.Chat.ID), slog.Any("error", err))
+		b.sendInternalError(ctx, bot, update.Message.Chat.ID)
+	}
+}
+
+// --- Admin Server Callback Handlers --- //
+
+// handleAdminServerAddCallback initiates the process of adding a new server.
+func (b *Bot) handleAdminServerAddCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	user := UserFromContext(ctx)
+	if user == nil {
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка: пользователь не найден", ShowAlert: true})
+		return
+	}
+
+	b.logger.InfoContext(ctx, "Handling 'Admin Add Server' callback", slog.String("admin_user_id", user.ID.Hex()))
+
+	// Отвечаем на callback
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID})
+
+	// Запускаем диалог для добавления сервера
+	chatID := cb.From.ID
+
+	// Инициализируем состояние диалога
+	b.clearDialogState(chatID) // Очищаем предыдущее состояние
+	b.setDialogState(chatID, "state", serverAddStateWaitName)
+
+	// Формируем инструкцию для первого шага (имя сервера)
+	instructionText := "➕ *Добавление нового сервера*\n\n" +
+		"Шаг 1 из 7: Введите *имя сервера* (например, `Amsterdam-1`).\n\n" +
+		"Чтобы отменить процесс на любом этапе, напишите /cancel"
+
+	params := &gobot.SendMessageParams{
+		ChatID:    chatID,
+		Text:      escapeMarkdownV2(instructionText),
+		ParseMode: "MarkdownV2",
+	}
+
+	_, err := bot.SendMessage(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to send server add step 1 message", slog.Int64("chat_id", chatID), slog.Any("error", err))
+	}
+}
+
+// handleAdminServerCancelAddCallback обрабатывает отмену добавления сервера
+func (b *Bot) handleAdminServerCancelAddCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	user := UserFromContext(ctx)
+	if user == nil {
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка: пользователь не найден", ShowAlert: true})
+		return
+	}
+
+	b.logger.InfoContext(ctx, "Handling 'Cancel Add Server' callback", slog.String("admin_user_id", user.ID.Hex()))
+
+	// Отвечаем на callback
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID})
+
+	// Отправляем сообщение о том, что добавление сервера отменено
+	chatID := cb.From.ID
+	params := &gobot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "❌ Добавление сервера отменено.",
+		ReplyMarkup: serverManagementKeyboard(),
+	}
+
+	_, err := bot.SendMessage(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to send server add canceled message", slog.Int64("chat_id", chatID), slog.Any("error", err))
+	}
+}
+
+// handleAdminServerAddConfirmCallback обрабатывает подтверждение добавления сервера
+func (b *Bot) handleAdminServerAddConfirmCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	user := UserFromContext(ctx)
+	if user == nil {
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка: пользователь не найден", ShowAlert: true})
+		return
+	}
+
+	chatID := cb.From.ID
+
+	b.logger.InfoContext(ctx, "Handling 'Confirm Add Server' callback", slog.String("admin_user_id", user.ID.Hex()))
+
+	// Получаем данные сервера из состояния диалога
+	name := b.getDialogStateString(chatID, "name")
+	apiHost := b.getDialogStateString(chatID, "api_host")
+	publicHost := b.getDialogStateString(chatID, "public_host")
+	username := b.getDialogStateString(chatID, "username")
+	password := b.getDialogStateString(chatID, "password")
+	location := b.getDialogStateString(chatID, "location")
+	inboundId := b.getDialogStateInt(chatID, "inbound_id")
+
+	// Если не задан inboundId, используем значение по умолчанию
+	if inboundId == 0 {
+		inboundId = serverAddDefaultInbound
+	}
+
+	// Проверяем, что все обязательные поля заполнены
+	if name == "" || apiHost == "" || publicHost == "" || username == "" || password == "" {
+		b.logger.WarnContext(ctx, "Missing required server data",
+			slog.String("admin_user_id", user.ID.Hex()),
+			slog.String("name", name),
+			slog.String("api_host", apiHost),
+			slog.String("public_host", publicHost))
+
+		// Отвечаем на callback
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+			CallbackQueryID: cb.ID,
+			Text:            "Ошибка: не все обязательные поля заполнены",
+			ShowAlert:       true,
+		})
+
+		// Очищаем состояние диалога
+		b.clearDialogState(chatID)
+		return
+	}
+
+	// Отвечаем на callback
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID})
+
+	// Добавляем сервер через сервис
+	b.logger.InfoContext(ctx, "Adding server",
+		slog.String("admin_user_id", user.ID.Hex()),
+		slog.String("name", name),
+		slog.String("api_host", apiHost))
+
+	server, err := b.serverService.AddServer(ctx, name, publicHost, apiHost, username, password, location, inboundId)
+
+	// После завершения операции очищаем состояние диалога независимо от результата
+	b.clearDialogState(chatID)
+
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to add server",
+			slog.String("admin_user_id", user.ID.Hex()),
+			slog.String("server_name", name),
+			slog.Any("error", err))
+
+		// Отправляем сообщение об ошибке
+		params := &gobot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "❌ Ошибка при добавлении сервера: " + err.Error(),
+		}
+		_, _ = bot.SendMessage(ctx, params)
+		return
+	}
+
+	// Отправляем сообщение об успешном добавлении сервера
+	successMsg := fmt.Sprintf("✅ Сервер успешно добавлен!\n\n"+
+		"📋 *Информация о сервере:*\n"+
+		"ID: `%s`\n"+
+		"Имя: `%s`\n"+
+		"Расположение: `%s`\n"+
+		"Публичный хост: `%s`\n"+
+		"API хост: `%s`\n"+
+		"ID Inbound: `%d`",
+		server.ID.Hex(), server.Name, server.Location,
+		server.PublicHost, server.ApiHost, server.TargetInboundID)
+
+	params := &gobot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        escapeMarkdownV2(successMsg),
+		ParseMode:   "MarkdownV2",
+		ReplyMarkup: serverManagementKeyboard(),
+	}
+
+	_, sendErr := bot.SendMessage(ctx, params)
+	if sendErr != nil {
+		b.logger.ErrorContext(ctx, "Failed to send server added success message",
+			slog.Int64("chat_id", chatID),
+			slog.Any("error", sendErr))
+	}
+}
+
+// handleAdminServerTextInput обрабатывает текстовые сообщения при вводе данных сервера
+func (b *Bot) handleAdminServerTextInput(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	user := UserFromContext(ctx)
+	if user == nil {
+		return
+	}
+
+	// Получаем ID чата и текст сообщения
+	chatID := update.Message.Chat.ID
+	messageText := update.Message.Text
+
+	// Если пользователь отправил /cancel, отменяем процесс
+	if messageText == "/cancel" {
+		b.clearDialogState(chatID)
+		b.sendUserMessage(ctx, bot, chatID, "❌ Добавление сервера отменено.")
+		return
+	}
+
+	// Получаем текущее состояние диалога
+	state := b.getDialogStateString(chatID, "state")
+	if state == "" {
+		// Нет активного диалога, ничего не делаем
+		return
+	}
+
+	// Обрабатываем текущий шаг диалога
+	switch state {
+	case serverAddStateWaitName:
+		// Сохраняем имя сервера
+		b.setDialogState(chatID, "name", messageText)
+		b.setDialogState(chatID, "state", serverAddStateWaitApiHost)
+
+		// Запрашиваем API хост
+		instructionText := "➕ *Добавление нового сервера*\n\n" +
+			"Шаг 2 из 7: Введите *API хост* сервера (например, `http://38.244.152.237:54321`).\n\n" +
+			"Это URL-адрес панели X-UI."
+
+		params := &gobot.SendMessageParams{
+			ChatID:    chatID,
+			Text:      escapeMarkdownV2(instructionText),
+			ParseMode: "MarkdownV2",
+		}
+		_, err := bot.SendMessage(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send server add step 2 message", slog.Int64("chat_id", chatID), slog.Any("error", err))
+		}
+
+	case serverAddStateWaitApiHost:
+		// Сохраняем API хост
+		b.setDialogState(chatID, "api_host", messageText)
+		b.setDialogState(chatID, "state", serverAddStateWaitPublicHost)
+
+		// Запрашиваем публичный хост
+		instructionText := "➕ *Добавление нового сервера*\n\n" +
+			"Шаг 3 из 7: Введите *публичный хост* сервера (например, `38.244.152.237` или `myserver.domain.com`).\n\n" +
+			"Это адрес, который будет использоваться в конфигурации для подключения клиентов."
+
+		params := &gobot.SendMessageParams{
+			ChatID:    chatID,
+			Text:      escapeMarkdownV2(instructionText),
+			ParseMode: "MarkdownV2",
+		}
+		_, err := bot.SendMessage(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send server add step 3 message", slog.Int64("chat_id", chatID), slog.Any("error", err))
+		}
+
+	case serverAddStateWaitPublicHost:
+		// Сохраняем публичный хост
+		b.setDialogState(chatID, "public_host", messageText)
+		b.setDialogState(chatID, "state", serverAddStateWaitUsername)
+
+		// Запрашиваем логин
+		instructionText := "➕ *Добавление нового сервера*\n\n" +
+			"Шаг 4 из 7: Введите *логин* для доступа к API сервера."
+
+		params := &gobot.SendMessageParams{
+			ChatID:    chatID,
+			Text:      escapeMarkdownV2(instructionText),
+			ParseMode: "MarkdownV2",
+		}
+		_, err := bot.SendMessage(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send server add step 4 message", slog.Int64("chat_id", chatID), slog.Any("error", err))
+		}
+
+	case serverAddStateWaitUsername:
+		// Сохраняем логин
+		b.setDialogState(chatID, "username", messageText)
+		b.setDialogState(chatID, "state", serverAddStateWaitPassword)
+
+		// Запрашиваем пароль
+		instructionText := "➕ *Добавление нового сервера*\n\n" +
+			"Шаг 5 из 7: Введите *пароль* для доступа к API сервера."
+
+		params := &gobot.SendMessageParams{
+			ChatID:    chatID,
+			Text:      escapeMarkdownV2(instructionText),
+			ParseMode: "MarkdownV2",
+		}
+		_, err := bot.SendMessage(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send server add step 5 message", slog.Int64("chat_id", chatID), slog.Any("error", err))
+		}
+
+	case serverAddStateWaitPassword:
+		// Сохраняем пароль
+		b.setDialogState(chatID, "password", messageText)
+		b.setDialogState(chatID, "state", serverAddStateWaitLocation)
+
+		// Запрашиваем локацию
+		instructionText := "➕ *Добавление нового сервера*\n\n" +
+			"Шаг 6 из 7: Введите *расположение* сервера (например, `Amsterdam, NL` или `Эстония`).\n\n" +
+			"Это информация будет отображаться пользователям при выборе сервера."
+
+		params := &gobot.SendMessageParams{
+			ChatID:    chatID,
+			Text:      escapeMarkdownV2(instructionText),
+			ParseMode: "MarkdownV2",
+		}
+		_, err := bot.SendMessage(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send server add step 6 message", slog.Int64("chat_id", chatID), slog.Any("error", err))
+		}
+
+	case serverAddStateWaitLocation:
+		// Сохраняем локацию
+		b.setDialogState(chatID, "location", messageText)
+		b.setDialogState(chatID, "state", serverAddStateWaitInbound)
+
+		// Запрашиваем inbound ID
+		instructionText := "➕ *Добавление нового сервера*\n\n" +
+			"Шаг 7 из 7: Введите *ID входящего соединения* (Inbound ID) в панели X-UI.\n\n" +
+			"Обычно это число от 1 до 10. По умолчанию используется 1."
+
+		params := &gobot.SendMessageParams{
+			ChatID:    chatID,
+			Text:      escapeMarkdownV2(instructionText),
+			ParseMode: "MarkdownV2",
+		}
+		_, err := bot.SendMessage(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send server add step 7 message", slog.Int64("chat_id", chatID), slog.Any("error", err))
+		}
+
+	case serverAddStateWaitInbound:
+		// Пытаемся преобразовать введенный текст в число
+		inboundID := serverAddDefaultInbound // Значение по умолчанию
+		if messageText != "" {
+			if val, err := strconv.Atoi(messageText); err == nil {
+				inboundID = val
+			}
+		}
+
+		// Сохраняем inbound ID
+		b.setDialogState(chatID, "inbound_id", inboundID)
+		b.setDialogState(chatID, "state", serverAddStateConfirmation)
+
+		// Получаем все сохраненные данные
+		name := b.getDialogStateString(chatID, "name")
+		apiHost := b.getDialogStateString(chatID, "api_host")
+		publicHost := b.getDialogStateString(chatID, "public_host")
+		username := b.getDialogStateString(chatID, "username")
+		password := b.getDialogStateString(chatID, "password")
+		location := b.getDialogStateString(chatID, "location")
+
+		// Формируем сообщение для подтверждения
+		confirmMsg := fmt.Sprintf("📋 *Данные нового сервера:*\n\n"+
+			"Имя: `%s`\n"+
+			"Расположение: `%s`\n"+
+			"Публичный хост: `%s`\n"+
+			"API хост: `%s`\n"+
+			"Учетная запись: `%s` / `%s`\n"+
+			"ID Inbound: `%d`\n\n"+
+			"Проверьте данные и подтвердите добавление сервера или отмените операцию.",
+			name, location, publicHost, apiHost, username, password, inboundID)
+
+		// Отправляем сообщение с данными сервера и кнопками подтверждения
+		params := &gobot.SendMessageParams{
+			ChatID:      chatID,
+			Text:        escapeMarkdownV2(confirmMsg),
+			ParseMode:   "MarkdownV2",
+			ReplyMarkup: createServerAddConfirmationKeyboard(),
+		}
+
+		_, err := bot.SendMessage(ctx, params)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to send server confirmation message",
+				slog.Int64("chat_id", chatID),
+				slog.Any("error", err))
+		}
+
+	default:
+		// Неизвестное состояние, сбрасываем диалог
+		b.clearDialogState(chatID)
+		b.sendUserMessage(ctx, bot, chatID, "❌ Произошла ошибка в диалоге. Добавление сервера отменено.")
+	}
+}
+
+// handleAdminServerListCallback displays the list of configured servers.
+func (b *Bot) handleAdminServerListCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	user := UserFromContext(ctx)
+	if user == nil {
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка: пользователь не найден", ShowAlert: true})
+		return
+	}
+
+	b.logger.InfoContext(ctx, "Handling 'Admin List Servers' callback", slog.String("admin_user_id", user.ID.Hex()))
+
+	servers, err := b.serverService.ListAllServers(ctx)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to list all servers for admin", slog.String("admin_user_id", user.ID.Hex()), slog.Any("error", err))
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка при получении списка серверов.", ShowAlert: true})
+		return
+	}
+
+	// Отвечаем на callback
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID})
+
+	var msgText strings.Builder
+	msgText.WriteString("📜 *Список всех серверов:*\n\n")
+
+	if len(servers) == 0 {
+		msgText.WriteString("_Нет настроенных серверов._")
+	} else {
+		for i, srv := range servers {
+			enabledEmoji := "❌"
+			if srv.IsEnabled {
+				enabledEmoji = "✅"
+			}
+			msgText.WriteString(fmt.Sprintf("%d. *%s* (%s) %s `[%s]`\n",
+				i+1, srv.Name, srv.Location, enabledEmoji, srv.ID.Hex()))
+		}
+	}
+
+	// Отправляем новое сообщение в личку админу
+	chatID := cb.From.ID
+	sendParams := &gobot.SendMessageParams{
+		ChatID:    chatID,
+		Text:      msgText.String(),
+		ParseMode: models.ParseModeMarkdown,
+		// ReplyMarkup: // TODO: Добавить клавиатуру со списком серверов для управления
+	}
+	_, sendErr := bot.SendMessage(ctx, sendParams)
+	if sendErr != nil {
+		b.logger.ErrorContext(ctx, "Failed to send server list message", slog.Int64("chat_id", chatID), slog.Any("error", sendErr))
+	}
+}
+
+// handleAdminServerBackCallback handles the back button from server management view.
+func (b *Bot) handleAdminServerBackCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	user := UserFromContext(ctx)
+	if user == nil {
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка: пользователь не найден", ShowAlert: true})
+		return
+	}
+
+	b.logger.InfoContext(ctx, "Handling 'Admin Back from Servers' callback", slog.String("admin_user_id", user.ID.Hex()))
+
+	// Отвечаем на callback
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID})
+
+	// Отправляем новое сообщение с меню управления серверами в личку админу
+	chatID := cb.From.ID
+	params := &gobot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "⚙️ *Управление серверами*\n\nВыберите действие:",
+		ParseMode:   models.ParseModeMarkdown,
+		ReplyMarkup: serverManagementKeyboard(),
+	}
+
+	_, err := bot.SendMessage(ctx, params)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to send server management menu message", slog.Int64("chat_id", chatID), slog.Any("error", err))
+	}
+}
+
+// Функция, которая создает клавиатуру с кнопкой для копирования ссылки
+func createConfigLinkKeyboard(configLink string) *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{
+					Text: "🔗 Копировать ссылку конфигурации",
+					URL:  configLink, // Прямая ссылка для открытия/копирования
+				},
+			},
+		},
 	}
 }

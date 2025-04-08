@@ -32,6 +32,7 @@ type ServerRepository interface {
 	Create(ctx context.Context, server *domain.Server) error
 	GetByID(ctx context.Context, id primitive.ObjectID) (*domain.Server, error)
 	GetAllEnabled(ctx context.Context) ([]*domain.Server, error)
+	GetAll(ctx context.Context) ([]*domain.Server, error)
 	Update(ctx context.Context, server *domain.Server) error
 	Delete(ctx context.Context, id primitive.ObjectID) error
 	// Add methods like GetByName, GetByApiURL if needed

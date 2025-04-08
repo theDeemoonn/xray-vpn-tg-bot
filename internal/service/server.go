@@ -19,6 +19,7 @@ type ServerService interface {
 	AddServer(ctx context.Context, name, publicHost, apiHost, username, password, location string, inboundId int) (*domain.Server, error)
 	GetServer(ctx context.Context, id string) (*domain.Server, error)
 	ListEnabledServers(ctx context.Context) ([]*domain.Server, error)
+	ListAllServers(ctx context.Context) ([]*domain.Server, error)
 	UpdateServer(ctx context.Context, id string, updatedServer *domain.Server) error
 	DeleteServer(ctx context.Context, id string) error
 	CheckServerHealth(ctx context.Context, server *domain.Server) error
@@ -94,6 +95,18 @@ func (s *serverService) ListEnabledServers(ctx context.Context) ([]*domain.Serve
 		return nil, err
 	}
 	s.logger.InfoContext(ctx, "Retrieved enabled servers", slog.Int("count", len(servers)))
+	return servers, nil
+}
+
+// ListAllServers retrieves all servers (enabled and disabled).
+func (s *serverService) ListAllServers(ctx context.Context) ([]*domain.Server, error) {
+	s.logger.DebugContext(ctx, "Listing all servers")
+	servers, err := s.serverRepo.GetAll(ctx)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "Failed to list all servers from repository", slog.Any("error", err))
+		return nil, err
+	}
+	s.logger.InfoContext(ctx, "Retrieved all servers", slog.Int("count", len(servers)))
 	return servers, nil
 }
 

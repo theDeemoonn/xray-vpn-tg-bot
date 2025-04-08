@@ -21,3 +21,16 @@ type InstructionService interface {
 	GetInstructionsByPlatform(ctx context.Context, platform string) ([]*domain.Instruction, error)
 	GetInstructionDetails(ctx context.Context, instructionID primitive.ObjectID) (*domain.Instruction, error)
 }
+
+// SubscriptionService предоставляет операции для управления подписками
+type SubscriptionService interface {
+	CreateSubscription(ctx context.Context, userID primitive.ObjectID, planID primitive.ObjectID) (*domain.Subscription, error)
+	GetActiveSubscriptionForUser(ctx context.Context, userID primitive.ObjectID) ([]*domain.SubscriptionDetails, error)
+	GetUserActiveSubscription(ctx context.Context, userID primitive.ObjectID) (*domain.Subscription, error)
+	GetSubscriptionByID(ctx context.Context, subID primitive.ObjectID) (*domain.Subscription, error)
+	ConfigureSubscriptionServer(ctx context.Context, userID primitive.ObjectID, subID primitive.ObjectID, serverID primitive.ObjectID) error
+	GetConfigLink(ctx context.Context, sub *domain.Subscription) (string, error)
+	FindAndExpireSubscriptions(ctx context.Context) error
+	GetSubscriptionQRCode(ctx context.Context, sub *domain.Subscription) ([]byte, error)
+	ActivateSubscription(ctx context.Context, userID, planID, paymentID primitive.ObjectID) error
+}

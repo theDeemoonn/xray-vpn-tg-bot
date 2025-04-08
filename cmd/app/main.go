@@ -15,14 +15,15 @@ func main() {
 	// Setup logger
 	logger := setupLogger()
 
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		logger.Error("Failed to load configuration", slog.String("error", err.Error()))
-		os.Exit(1)
-	}
+	// Load configuration using MustLoad (handles .env and fatal errors)
+	cfg := config.MustLoad()
+	// if err != nil { // Error handling is now inside MustLoad
+	// 	logger.Error("Failed to load configuration", slog.String("error", err.Error()))
+	// 	os.Exit(1)
+	// }
 
-	logger.Info("Starting application", slog.String("env", cfg.Environment))
+	// Log environment after successful config load
+	logger.Info("Configuration loaded successfully", slog.String("env", cfg.Environment))
 
 	// Create application context
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

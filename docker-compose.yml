@@ -59,7 +59,10 @@ services:
       YOOKASSA_WEBHOOK_SECRET: ${YOOKASSA_WEBHOOK_SECRET:-}
 
       # --- XUI --- #
-      # XUI_API_TIMEOUT: 15s
+      XUI_ADDRESS: ${XUI_ADDRESS}
+      XUI_USERNAME: ${XUI_USERNAME}
+      XUI_PASSWORD: ${XUI_PASSWORD}
+      XUI_API_TIMEOUT: ${XUI_API_TIMEOUT:-15s}
 
     volumes:
       # Mount a specific docker config file

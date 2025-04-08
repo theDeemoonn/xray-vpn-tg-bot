@@ -33,14 +33,24 @@ type AddClientRequest struct {
 // Based on common fields used in addClient/updateClient.
 type ClientSettings struct {
 	Email          string `json:"email"`
-	UUID           string `json:"id"`                   // Mapped to UUID
+	UUID           string `json:"id"`                   // Mapped to UUID for VMESS/VLESS
+	Password       string `json:"password,omitempty"`   // For Trojan
+	Method         string `json:"method,omitempty"`     // For Shadowsocks
+	Flow           string `json:"flow,omitempty"`       // Flow control (e.g., "xtls-rprx-vision")
 	Enable         bool   `json:"enable"`               // Enable/disable client
 	ExpiryTime     int64  `json:"expiryTime,omitempty"` // Expiration timestamp (milliseconds)
 	TotalGB        int    `json:"totalGB,omitempty"`    // Traffic limit in GB (0 = unlimited)
-	Flow           string `json:"flow,omitempty"`       // Flow control (e.g., "xtls-rprx-vision")
 	LimitIPs       int    `json:"limitIp,omitempty"`    // Max IPs allowed (0 = unlimited)
 	SubscriptionID string `json:"subId,omitempty"`      // Optional Subscription ID
 	TelegramID     string `json:"tgId,omitempty"`       // Optional Telegram ID (as string)
+	// WireGuard specific fields
+	PrivateKey    string `json:"privateKey,omitempty"`    // For WireGuard
+	PublicKey     string `json:"publicKey,omitempty"`     // For WireGuard
+	PreSharedKey  string `json:"presharedKey,omitempty"`  // For WireGuard
+	AllowedIPs    string `json:"allowedIPs,omitempty"`    // For WireGuard, comma-separated
+	ClientAddress string `json:"clientAddress,omitempty"` // For WireGuard
+	// Дополнительное поле для передачи протокола
+	Protocol string `json:"-"` // Не отправляем в JSON, используем внутри
 }
 
 // AddClientResponse represents the object returned on successful client addition.
@@ -97,15 +107,15 @@ type InboundRaw struct {
 
 // ClientInfo represents basic client info sometimes included in InboundRaw
 type ClientInfo struct {
-	ID         string `json:"id"` // UUID
-	Flow       string `json:"flow"`
-	Email      string `json:"email"`
-	Total      int    `json:"totalGB"`
-	ExpiryTime int64  `json:"expiryTime"`
-	Enable     bool   `json:"enable"`
-	LimitIP    int    `json:"limitIp"` // Number of IPs allowed
-	TgID       string `json:"tgId"`
-	SubID      string `json:"subId"`
+	ID         interface{} `json:"id"` // UUID или числовой ID
+	Flow       string      `json:"flow"`
+	Email      string      `json:"email"`
+	Total      int         `json:"totalGB"`
+	ExpiryTime int64       `json:"expiryTime"`
+	Enable     bool        `json:"enable"`
+	LimitIP    int         `json:"limitIp"` // Number of IPs allowed
+	TgID       string      `json:"tgId"`
+	SubID      string      `json:"subId"`
 }
 
 // VlessClientSetting represents a client within VLESS settings JSON.
@@ -122,6 +132,66 @@ type VlessSettings struct {
 	Clients    []VlessClientSetting `json:"clients"`
 	Decryption string               `json:"decryption"` // Usually "none"
 	Fallbacks  []interface{}        `json:"fallbacks"`  // Type depends on actual usage
+}
+
+// VMessSettings представляет собой настройки протокола VMess
+type VMessSettings struct {
+	Clients    []VMESSClientSetting `json:"clients"`
+	Decryption string               `json:"decryption,omitempty"` // Обычно "none"
+}
+
+// VMESSClientSetting представляет настройки клиента VMess
+type VMESSClientSetting struct {
+	ID       string `json:"id"`    // UUID
+	Email    string `json:"email"` // Идентификатор электронной почты
+	AlterId  int    `json:"alterId,omitempty"`
+	Security string `json:"security,omitempty"` // Метод шифрования
+}
+
+// TrojanSettings представляет собой настройки протокола Trojan
+type TrojanSettings struct {
+	Clients   []TrojanClientSetting `json:"clients"`
+	Fallbacks []interface{}         `json:"fallbacks,omitempty"`
+}
+
+// TrojanClientSetting представляет настройки клиента Trojan
+type TrojanClientSetting struct {
+	Password string `json:"password"` // Пароль вместо UUID
+	Email    string `json:"email"`    // Идентификатор электронной почты
+	Flow     string `json:"flow,omitempty"`
+}
+
+// ShadowsocksSettings представляет собой настройки протокола Shadowsocks
+type ShadowsocksSettings struct {
+	Clients  []ShadowsocksClientSetting `json:"clients"`
+	Network  string                     `json:"network,omitempty"`
+	Method   string                     `json:"method"` // Метод шифрования
+	Password string                     `json:"password,omitempty"`
+}
+
+// ShadowsocksClientSetting представляет настройки клиента Shadowsocks
+type ShadowsocksClientSetting struct {
+	Email    string `json:"email"`            // Email используется в качестве идентификатора
+	Password string `json:"password"`         // Пароль
+	Method   string `json:"method,omitempty"` // Метод шифрования, если отличается от общего
+}
+
+// WireGuardSettings представляет собой настройки протокола WireGuard
+type WireGuardSettings struct {
+	Clients      []WireGuardClientSetting `json:"clients"`
+	LocalAddress []string                 `json:"localAddress"` // Локальные адреса сервера
+	PrivateKey   string                   `json:"privateKey"`   // Приватный ключ сервера
+	Mtu          int                      `json:"mtu,omitempty"`
+}
+
+// WireGuardClientSetting представляет настройки клиента WireGuard
+type WireGuardClientSetting struct {
+	Email         string   `json:"email"`                  // Идентификатор электронной почты
+	PublicKey     string   `json:"publicKey"`              // Публичный ключ клиента
+	PrivateKey    string   `json:"privateKey,omitempty"`   // Приватный ключ, если генерируется сервером
+	PreSharedKey  string   `json:"preSharedKey,omitempty"` // Общий предварительный ключ
+	AllowedIPs    []string `json:"allowedIPs"`             // Разрешенные IP адреса
+	ClientAddress []string `json:"clientAddress"`          // Адреса клиента
 }
 
 // WSSettings represents WebSocket settings within StreamSettings.
@@ -195,7 +265,8 @@ type InboundSettings struct {
 	WSHost      string // From wsSettings.Headers["Host"]
 	GRPCService string // From grpcSettings.ServiceName
 	// Add ClientStats if needed for UpdateClient
-	ClientStats []ClientInfo `json:"-"` // Exclude from standard JSON, populate manually if needed
+	ClientStats []ClientInfo     `json:"-"` // Exclude from standard JSON, populate manually if needed
+	Clients     []ClientSettings `json:"-"` // Список клиентов, связанных с этим inbound
 }
 
 // ClientTraffic represents the traffic stats for a specific client (email).

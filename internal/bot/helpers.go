@@ -100,14 +100,25 @@ func UserFromContext(ctx context.Context) *domain.User {
 	return nil
 }
 
-// escapeMarkdownV2 экранирует символы, зарезервированные в MarkdownV2.
-func escapeMarkdownV2(s string) string {
-	// Полный список символов, которые нужно экранировать в MarkdownV2
-	chars := []string{"_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"}
-	for _, char := range chars {
-		s = strings.ReplaceAll(s, char, "\\"+char)
+// escapeMarkdownV2 экранирует специальные символы Markdown V2.
+func escapeMarkdownV2(text string) string {
+	// MarkdownV2 требует экранирования следующих символов:
+	// _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !
+	specialChars := []string{"_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"}
+
+	// Проверка: может быть, строка уже содержит экранированные символы?
+	if strings.Contains(text, "\\") {
+		// Если строка уже содержит обратные слеши, мы должны быть аккуратными
+		// Сначала заменяем обратные слеши на временный маркер
+		text = strings.ReplaceAll(text, "\\", "\\\\")
 	}
-	return s
+
+	// Экранируем каждый специальный символ
+	for _, char := range specialChars {
+		text = strings.ReplaceAll(text, char, "\\"+char)
+	}
+
+	return text
 }
 
 // Helper to translate status (can be expanded)
@@ -124,4 +135,55 @@ func translateStatus(status domain.SubscriptionStatus) string {
 	default:
 		return string(status)
 	}
+}
+
+// --- Методы для работы с состояниями диалогов ---
+
+// getDialogState возвращает текущее состояние диалога для пользователя
+func (b *Bot) getDialogState(userID int64) map[string]interface{} {
+	state, exists := b.dialogStates[userID]
+	if !exists {
+		state = make(map[string]interface{})
+		b.dialogStates[userID] = state
+	}
+	return state
+}
+
+// setDialogState устанавливает состояние диалога для пользователя
+func (b *Bot) setDialogState(userID int64, key string, value interface{}) {
+	state := b.getDialogState(userID)
+	state[key] = value
+}
+
+// getDialogStateString возвращает строковое значение из состояния диалога
+func (b *Bot) getDialogStateString(userID int64, key string) string {
+	state := b.getDialogState(userID)
+	value, exists := state[key]
+	if !exists {
+		return ""
+	}
+	strValue, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strValue
+}
+
+// getDialogStateInt возвращает целочисленное значение из состояния диалога
+func (b *Bot) getDialogStateInt(userID int64, key string) int {
+	state := b.getDialogState(userID)
+	value, exists := state[key]
+	if !exists {
+		return 0
+	}
+	intValue, ok := value.(int)
+	if !ok {
+		return 0
+	}
+	return intValue
+}
+
+// clearDialogState очищает состояние диалога для пользователя
+func (b *Bot) clearDialogState(userID int64) {
+	delete(b.dialogStates, userID)
 }

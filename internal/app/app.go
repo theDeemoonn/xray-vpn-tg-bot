@@ -119,11 +119,11 @@ func New(ctx context.Context, logger *slog.Logger, cfg *config.Config) (*App, er
 	// --- Initialize Services ---
 	logger.Info("Initializing services...")
 	userService := service.NewUserService(userRepo, logger)
-	serverService := service.NewServerService(serverRepo, logger, domain.XUIConfig{APITimeout: cfg.XUI.APITimeout})
+	serverService := service.NewServerService(serverRepo, logger, domain.XUIConfig{APITimeout: cfg.XUI.Timeout})
 	xuiClientFactory := func(server *domain.Server) (*xui.Client, error) {
-		return xui.NewClient(server.ApiHost, server.ApiUsername, server.ApiPassword, cfg.XUI.APITimeout, logger)
+		return xui.NewClient(server.ApiHost, server.ApiUsername, server.ApiPassword, cfg.XUI.Timeout, logger)
 	}
-	subscriptionService := service.NewSubscriptionService(subRepo, planRepo, serverRepo, userService, xuiClientFactory, logger)
+	subscriptionService := service.NewSubscriptionService(subRepo, planRepo, serverRepo, userService, xuiClientFactory, logger, userRepo)
 
 	// Initialize Payment Service (now requires SubscriptionService)
 	paymentService := service.NewPaymentService(

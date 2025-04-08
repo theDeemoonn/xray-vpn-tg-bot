@@ -93,6 +93,32 @@ func (r *ServerRepo) GetAllEnabled(ctx context.Context) ([]*domain.Server, error
 	return servers, nil
 }
 
+// GetAll retrieves all servers regardless of their enabled status.
+func (r *ServerRepo) GetAll(ctx context.Context) ([]*domain.Server, error) {
+	filter := bson.M{} // No filter
+	findOptions := options.Find().SetSort(bson.D{{Key: "location", Value: 1}, {Key: "name", Value: 1}})
+
+	cursor, err := r.collection.Find(ctx, filter, findOptions)
+	if err != nil {
+		r.logger.Error("Failed to query all servers", slog.String("error", err.Error()))
+		return nil, apperrors.NewInternalError("Не удалось получить все серверы", err)
+	}
+	defer cursor.Close(ctx)
+
+	var servers []*domain.Server
+	if err := cursor.All(ctx, &servers); err != nil {
+		r.logger.Error("Failed to decode all servers", slog.String("error", err.Error()))
+		return nil, apperrors.NewInternalError("Не удалось декодировать все серверы", err)
+	}
+
+	if servers == nil {
+		servers = []*domain.Server{} // Return empty slice instead of nil
+	}
+
+	r.logger.Debug("Retrieved all servers", slog.Int("count", len(servers)))
+	return servers, nil
+}
+
 // Update updates an existing server in the database.
 func (r *ServerRepo) Update(ctx context.Context, server *domain.Server) error {
 	server.UpdatedAt = time.Now()
