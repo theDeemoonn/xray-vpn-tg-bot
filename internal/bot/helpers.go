@@ -121,6 +121,33 @@ func escapeMarkdownV2(text string) string {
 	return text
 }
 
+// Helper to translate status with additional 3x-ui information
+func translateStatusWithXUI(status domain.SubscriptionStatus, isEnabledInXUI bool, trafficUsed int64, trafficLimit int64) string {
+	// Сначала проверяем состояние в 3x-ui
+	if !isEnabledInXUI {
+		return "Отключена в 3x-ui ⚠️"
+	}
+
+	// Проверяем трафик, если он ограничен
+	if trafficLimit > 0 && trafficUsed >= trafficLimit {
+		return "Трафик исчерпан 💨"
+	}
+
+	// Используем базовый перевод статуса
+	switch status {
+	case domain.SubscriptionStatusActive:
+		return "Активна ✅"
+	case domain.SubscriptionStatusExpired:
+		return "Истекла ⏳"
+	case domain.SubscriptionStatusCancelled:
+		return "Отменена ❌"
+	case domain.SubscriptionStatusDepleted:
+		return "Трафик исчерпан 💨"
+	default:
+		return string(status)
+	}
+}
+
 // Helper to translate status (can be expanded)
 func translateStatus(status domain.SubscriptionStatus) string {
 	switch status {

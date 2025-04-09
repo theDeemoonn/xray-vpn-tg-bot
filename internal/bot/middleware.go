@@ -91,3 +91,67 @@ func (b *Bot) userMiddleware(next gobot.HandlerFunc) gobot.HandlerFunc {
 		next(newCtx, bot, update)
 	}
 }
+
+// adminRequired - middleware для проверки прав администратора
+func (b *Bot) adminRequired(next gobot.HandlerFunc) gobot.HandlerFunc {
+	return func(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+		user := UserFromContext(ctx)
+		if user == nil {
+			// Попытка отправить сообщение об ошибке, если возможно
+			if update.Message != nil {
+				b.sendUserError(ctx, bot, update.Message.Chat.ID, "Ошибка: не удалось получить информацию о пользователе.")
+			} else if update.CallbackQuery != nil {
+				// Используем bot.AnswerCallbackQuery
+				_, err := bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+					CallbackQueryID: update.CallbackQuery.ID,
+					Text:            "Ошибка: не удалось получить информацию о пользователе.",
+					ShowAlert:       true, // Показываем алерт, т.к. это ошибка
+				})
+				if err != nil {
+					b.logger.ErrorContext(ctx, "Failed to answer callback query in adminRequired (user nil)", slog.String("callback_query_id", update.CallbackQuery.ID), slog.Any("error", err))
+				}
+			}
+			return
+		}
+
+		isAdmin, err := b.userService.IsAdmin(ctx, user.ID)
+		if err != nil {
+			b.logger.ErrorContext(ctx, "Failed to check admin status in middleware", slog.String("user_id", user.ID.Hex()), slog.Any("error", err))
+			if update.Message != nil {
+				b.sendInternalError(ctx, bot, update.Message.Chat.ID)
+			} else if update.CallbackQuery != nil {
+				// Используем bot.AnswerCallbackQuery
+				_, errAns := bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+					CallbackQueryID: update.CallbackQuery.ID,
+					Text:            "Внутренняя ошибка сервера.",
+					ShowAlert:       true,
+				})
+				if errAns != nil {
+					b.logger.ErrorContext(ctx, "Failed to answer callback query in adminRequired (check error)", slog.String("callback_query_id", update.CallbackQuery.ID), slog.Any("error", errAns))
+				}
+			}
+			return
+		}
+
+		if !isAdmin {
+			b.logger.WarnContext(ctx, "Admin access denied", slog.String("user_id", user.ID.Hex()))
+			if update.Message != nil {
+				b.sendUserMessage(ctx, bot, update.Message.Chat.ID, "⛔ Доступ запрещен. Эта команда доступна только администраторам.")
+			} else if update.CallbackQuery != nil {
+				// Используем bot.AnswerCallbackQuery
+				_, errAns := bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+					CallbackQueryID: update.CallbackQuery.ID,
+					Text:            "⛔ Доступ запрещен.",
+					ShowAlert:       true, // Показываем алерт об отказе
+				})
+				if errAns != nil {
+					b.logger.ErrorContext(ctx, "Failed to answer callback query in adminRequired (access denied)", slog.String("callback_query_id", update.CallbackQuery.ID), slog.Any("error", errAns))
+				}
+			}
+			return // Stop processing
+		}
+
+		// Если админ, передаем управление следующему обработчику
+		next(ctx, bot, update)
+	}
+}

@@ -85,6 +85,13 @@ const (
 	callbackServerAddStepCancel  = callbackPrefixAdminServers + "add_cancel"
 	callbackServerAddStepConfirm = callbackPrefixAdminServers + "add_confirm"
 
+	// Константы для управления конкретными серверами
+	callbackAdminServerView          = "admin_server_view:"
+	callbackAdminServerDeleteConfirm = "admin_server_delete_confirm:"
+	callbackAdminServerDeleteCancel  = "admin_server_delete_cancel:"
+	callbackAdminServerToggle        = "admin_server_toggle:"
+	callbackAdminServerBackToList    = "admin_servers_back_list"
+
 	// Клавиатуры для добавления сервера
 	serverAddCancelButton  = "❌ Отменить"
 	serverAddConfirmButton = "✅ Подтвердить"
@@ -353,7 +360,67 @@ func createServerAddConfirmationKeyboard() models.InlineKeyboardMarkup {
 	}
 }
 
-// TODO: Добавить клавиатуры для списка серверов, просмотра/редактирования сервера, подтверждения удаления и т.д.
+// manageServersKeyboard создает клавиатуру для управления списком серверов.
+func manageServersKeyboard(servers []*domain.Server) *models.InlineKeyboardMarkup {
+	var keyboard [][]models.InlineKeyboardButton
+
+	// Добавляем кнопки для каждого сервера
+	for _, server := range servers {
+		statusEmoji := "✅"
+		if !server.IsEnabled {
+			statusEmoji = "⛔"
+		}
+		buttonText := fmt.Sprintf("%s %s (%s)", statusEmoji, server.Name, server.Location)
+		keyboard = append(keyboard, []models.InlineKeyboardButton{
+			{Text: buttonText, CallbackData: callbackAdminServerView + server.ID.Hex()},
+		})
+	}
+
+	// Добавляем кнопки действий
+	keyboard = append(keyboard, []models.InlineKeyboardButton{
+		{Text: "➕ Добавить сервер", CallbackData: callbackAdminServersActionAdd},
+	})
+	keyboard = append(keyboard, []models.InlineKeyboardButton{
+		{Text: "⬅️ Назад в админку", CallbackData: callbackAdminServersBackToAdmin},
+	})
+
+	return &models.InlineKeyboardMarkup{InlineKeyboard: keyboard}
+}
+
+// viewServerKeyboard создает клавиатуру для просмотра и управления конкретным сервером.
+func viewServerKeyboard(server *domain.Server) *models.InlineKeyboardMarkup {
+	var keyboard [][]models.InlineKeyboardButton
+
+	toggleText := "⛔ Выключить" // Текст по умолчанию, если сервер включен
+	if !server.IsEnabled {
+		toggleText = "✅ Включить"
+	}
+
+	// Кнопки действий с сервером
+	keyboard = append(keyboard, []models.InlineKeyboardButton{
+		{Text: toggleText, CallbackData: callbackAdminServerToggle + server.ID.Hex()},
+	})
+	keyboard = append(keyboard, []models.InlineKeyboardButton{
+		{Text: "🗑 Удалить", CallbackData: callbackAdminServerDeleteConfirm + server.ID.Hex()}, // Сразу на подтверждение
+	})
+	keyboard = append(keyboard, []models.InlineKeyboardButton{
+		{Text: "⬅️ Назад к списку", CallbackData: callbackAdminServerBackToList},
+	})
+
+	return &models.InlineKeyboardMarkup{InlineKeyboard: keyboard}
+}
+
+// confirmServerDeleteKeyboard создает клавиатуру для подтверждения удаления сервера.
+func confirmServerDeleteKeyboard(serverID string) *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{
+				{Text: "✅ Да, удалить", CallbackData: callbackAdminServerDeleteConfirm + serverID},
+				{Text: "❌ Нет, отмена", CallbackData: callbackAdminServerDeleteCancel + serverID},
+			},
+		},
+	}
+}
 
 // getUserKeyboard возвращает клавиатуру с учетом статуса администратора
 func (b *Bot) getUserKeyboard(ctx context.Context, user *domain.User) models.ReplyKeyboardMarkup {

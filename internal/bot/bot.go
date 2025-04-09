@@ -85,7 +85,7 @@ func New(
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonAdmin, gobot.MatchTypeExact, b.adminRequired(b.adminPanelHandler))
 
 	// Кнопки внутри Админ-панели (защищены middleware)
-	b.api.RegisterHandler(gobot.HandlerTypeMessageText, AdminMenuButtonServers, gobot.MatchTypeExact, b.adminRequired(b.adminServersHandler))
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, AdminMenuButtonServers, gobot.MatchTypeExact, b.adminRequired(b.handleAdminServersHandler))
 
 	// Register callback query handlers (defined in handlers.go)
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackActionSelectPlan, gobot.MatchTypePrefix, b.handlePlanSelectionCallback)
@@ -111,12 +111,12 @@ func New(
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackServerAddStepCancel, gobot.MatchTypeExact, b.adminRequired(b.handleAdminServerCancelAddCallback))
 	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackServerAddStepConfirm, gobot.MatchTypeExact, b.adminRequired(b.handleAdminServerAddConfirmCallback))
 
-	// TODO: Реализовать полноценный механизм отслеживания состояния диалога пользователя
-	// через UserService или с помощью контекста. Временно используем обработчик defaultHandler
-	// для перехвата текстовых сообщений от администраторов, которые могут быть связаны с диалогом
-	// добавления сервера.
-
-	// TODO: Добавить регистрацию обработчиков для callback'ов просмотра/удаления/переключения сервера
+	// Регистрируем обработчики для callback'ов управления серверами (просмотр, удаление, переключение)
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackAdminServerView, gobot.MatchTypePrefix, b.adminRequired(b.handleAdminServerViewCallback))                   // Просмотр деталей сервера
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackAdminServerDeleteConfirm, gobot.MatchTypePrefix, b.adminRequired(b.handleAdminServerDeleteConfirmCallback)) // Подтверждение удаления
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackAdminServerDeleteCancel, gobot.MatchTypePrefix, b.adminRequired(b.handleAdminServerDeleteCancelCallback))   // Отмена удаления
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackAdminServerToggle, gobot.MatchTypePrefix, b.adminRequired(b.handleAdminServerToggleCallback))               // Включить/выключить сервер
+	b.api.RegisterHandler(gobot.HandlerTypeCallbackQueryData, callbackAdminServerBackToList, gobot.MatchTypeExact, b.adminRequired(b.handleAdminServerBackToListCallback))        // Назад к списку серверов
 
 	// Note: PreCheckoutQuery and SuccessfulPayment are handled within the defaultHandler
 
@@ -143,80 +143,3 @@ func (b *Bot) mainMenuKeyboard() models.ReplyKeyboardMarkup {
 	// стандартную клавиатуру без проверки на админа
 	return *mainMenuKeyboard()
 }
-
-// --- Removed Handlers, Middlewares, Helpers --- //
-// The implementations for handlers (startHandler, buySubscriptionHandler, etc.),
-// middlewares (logMiddleware, userMiddleware), and helpers (sendUserError,
-// sendInternalError, context functions, escapeMarkdownV2, translateStatus)
-// have been moved to handlers.go, middleware.go, and helpers.go respectively.
-
-// --- Removed Keyboard Functions --- //
-// Implementations for createPlansKeyboard, buildServerSelectionKeyboard etc.
-// are now in keyboards.go.
-
-// adminRequired - middleware для проверки прав администратора
-// (Если его нет в middleware.go, его нужно создать)
-func (b *Bot) adminRequired(next gobot.HandlerFunc) gobot.HandlerFunc {
-	return func(ctx context.Context, bot *gobot.Bot, update *models.Update) {
-		user := UserFromContext(ctx)
-		if user == nil {
-			// Попытка отправить сообщение об ошибке, если возможно
-			if update.Message != nil {
-				b.sendUserError(ctx, bot, update.Message.Chat.ID, "Ошибка: не удалось получить информацию о пользователе.")
-			} else if update.CallbackQuery != nil {
-				// Используем bot.AnswerCallbackQuery
-				_, err := bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
-					CallbackQueryID: update.CallbackQuery.ID,
-					Text:            "Ошибка: не удалось получить информацию о пользователе.",
-					ShowAlert:       true, // Показываем алерт, т.к. это ошибка
-				})
-				if err != nil {
-					b.logger.ErrorContext(ctx, "Failed to answer callback query in adminRequired (user nil)", slog.String("callback_query_id", update.CallbackQuery.ID), slog.Any("error", err))
-				}
-			}
-			return
-		}
-
-		isAdmin, err := b.userService.IsAdmin(ctx, user.ID)
-		if err != nil {
-			b.logger.ErrorContext(ctx, "Failed to check admin status in middleware", slog.String("user_id", user.ID.Hex()), slog.Any("error", err))
-			if update.Message != nil {
-				b.sendInternalError(ctx, bot, update.Message.Chat.ID)
-			} else if update.CallbackQuery != nil {
-				// Используем bot.AnswerCallbackQuery
-				_, errAns := bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
-					CallbackQueryID: update.CallbackQuery.ID,
-					Text:            "Внутренняя ошибка сервера.",
-					ShowAlert:       true,
-				})
-				if errAns != nil {
-					b.logger.ErrorContext(ctx, "Failed to answer callback query in adminRequired (check error)", slog.String("callback_query_id", update.CallbackQuery.ID), slog.Any("error", errAns))
-				}
-			}
-			return
-		}
-
-		if !isAdmin {
-			b.logger.WarnContext(ctx, "Admin access denied", slog.String("user_id", user.ID.Hex()))
-			if update.Message != nil {
-				b.sendUserMessage(ctx, bot, update.Message.Chat.ID, "⛔ Доступ запрещен. Эта команда доступна только администраторам.")
-			} else if update.CallbackQuery != nil {
-				// Используем bot.AnswerCallbackQuery
-				_, errAns := bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
-					CallbackQueryID: update.CallbackQuery.ID,
-					Text:            "⛔ Доступ запрещен.",
-					ShowAlert:       true, // Показываем алерт об отказе
-				})
-				if errAns != nil {
-					b.logger.ErrorContext(ctx, "Failed to answer callback query in adminRequired (access denied)", slog.String("callback_query_id", update.CallbackQuery.ID), slog.Any("error", errAns))
-				}
-			}
-			return // Stop processing
-		}
-
-		// Если админ, передаем управление следующему обработчику
-		next(ctx, bot, update)
-	}
-}
-
-// TODO: Перенести adminRequired в middleware.go, если его там еще нет.

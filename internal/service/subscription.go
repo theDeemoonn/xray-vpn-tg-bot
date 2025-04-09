@@ -333,3 +333,29 @@ func (s *subscriptionService) GetActiveSubscriptionForUser(ctx context.Context, 
 
 	return []*domain.SubscriptionDetails{}, nil
 }
+
+// UpdateTrafficStats обновляет информацию о трафике и дате окончания подписки
+func (s *subscriptionService) UpdateTrafficStats(ctx context.Context, sub *domain.Subscription) error {
+	s.logger.InfoContext(ctx, "Updating subscription traffic statistics",
+		slog.String("sub_id", sub.ID.Hex()),
+		slog.Int64("traffic_used", sub.TrafficUsed),
+		slog.Int64("traffic_limit", sub.TrafficLimit),
+		slog.Time("expires_at", sub.ExpiresAt))
+
+	// Обновляем время последнего изменения
+	sub.UpdatedAt = time.Now()
+
+	// Сохраняем изменения в базе данных
+	err := s.subRepo.Update(ctx, sub)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "Failed to update subscription traffic stats in repository",
+			slog.String("sub_id", sub.ID.Hex()),
+			slog.Any("error", err))
+		return err
+	}
+
+	s.logger.Debug("Subscription traffic statistics updated successfully",
+		slog.String("sub_id", sub.ID.Hex()),
+		slog.Int64("traffic_used", sub.TrafficUsed))
+	return nil
+}

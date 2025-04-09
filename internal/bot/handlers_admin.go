@@ -144,44 +144,27 @@ func (b *Bot) adminPanelHandler(ctx context.Context, bot *gobot.Bot, update *mod
 	}
 }
 
-// adminServersHandler обрабатывает запрос к разделу управления серверами
-func (b *Bot) adminServersHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
-	user := UserFromContext(ctx)
-	if user == nil {
-		b.logger.WarnContext(ctx, "User not found in context when handling admin servers")
-		b.sendUserError(ctx, bot, update.Message.Chat.ID, "Ошибка: пользователь не найден")
+// handleAdminServersHandler показывает меню управления серверами
+func (b *Bot) handleAdminServersHandler(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	chatID := update.Message.Chat.ID
+
+	servers, err := b.serverService.ListAllServers(ctx)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to get servers for admin panel", slog.Any("error", err))
+		b.sendInternalError(ctx, bot, chatID)
 		return
 	}
 
-	b.logger.InfoContext(ctx, "Handling admin servers request", slog.String("user_id", user.ID.Hex()))
-
-	// Создаем inline клавиатуру для управления серверами
-	inlineKeyboard := models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{
-				{Text: AdminServersButtonAdd, CallbackData: callbackAdminServersActionAdd},
-			},
-			{
-				{Text: AdminServersButtonList, CallbackData: callbackAdminServersActionList},
-			},
-			{
-				{Text: AdminServersButtonBack, CallbackData: callbackAdminServersBackToAdmin},
-			},
-		},
-	}
-
-	// Отправляем сообщение с опциями управления серверами
-	params := &gobot.SendMessageParams{
-		ChatID:      update.Message.Chat.ID,
-		Text:        "⚙️ *Управление серверами*\n\nВыберите действие:",
+	msg := "*Управление серверами*\n\nВыберите сервер для просмотра или добавьте новый."
+	_, err = bot.SendMessage(ctx, &gobot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        escapeMarkdownV2(msg),
 		ParseMode:   models.ParseModeMarkdown,
-		ReplyMarkup: inlineKeyboard,
-	}
+		ReplyMarkup: manageServersKeyboard(servers), // Используем новую клавиатуру
+	})
 
-	_, err := bot.SendMessage(ctx, params)
 	if err != nil {
-		b.logger.ErrorContext(ctx, "Failed to send admin servers message", slog.Int64("chat_id", update.Message.Chat.ID), slog.Any("error", err))
-		b.sendInternalError(ctx, bot, update.Message.Chat.ID)
+		b.logger.ErrorContext(ctx, "Failed to send admin servers message", slog.Int64("chat_id", chatID), slog.Any("error", err))
 	}
 }
 
@@ -595,10 +578,10 @@ func (b *Bot) handleAdminServerListCallback(ctx context.Context, bot *gobot.Bot,
 	// Отправляем новое сообщение в личку админу
 	chatID := cb.From.ID
 	sendParams := &gobot.SendMessageParams{
-		ChatID:    chatID,
-		Text:      msgText.String(),
-		ParseMode: models.ParseModeMarkdown,
-		// ReplyMarkup: // TODO: Добавить клавиатуру со списком серверов для управления
+		ChatID:      chatID,
+		Text:        msgText.String(),
+		ParseMode:   models.ParseModeMarkdown,
+		ReplyMarkup: manageServersKeyboard(servers), // Добавляем клавиатуру со списком серверов
 	}
 	_, sendErr := bot.SendMessage(ctx, sendParams)
 	if sendErr != nil {
@@ -653,4 +636,265 @@ func (b *Bot) handleAdminDialogInput(ctx context.Context, bot *gobot.Bot, update
 		b.clearDialogState(chatID)
 		b.sendUserMessage(ctx, bot, chatID, "Неизвестное состояние диалога. Операция отменена.")
 	}
+}
+
+// handleAdminServerViewCallback - Обработчик для просмотра деталей сервера
+func (b *Bot) handleAdminServerViewCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	user := UserFromContext(ctx)
+	if user == nil {
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка: пользователь не найден", ShowAlert: true})
+		return
+	}
+
+	// Извлекаем serverID из callbackData
+	callbackData := cb.Data
+	serverIDHex := strings.TrimPrefix(callbackData, callbackAdminServerView)
+
+	b.logger.InfoContext(ctx, "Handling admin server view callback",
+		slog.String("admin_user_id", user.ID.Hex()),
+		slog.String("server_id", serverIDHex))
+
+	// Получаем информацию о сервере
+	server, err := b.serverService.GetServer(ctx, serverIDHex)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to get server details",
+			slog.String("server_id", serverIDHex),
+			slog.Any("error", err))
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+			CallbackQueryID: cb.ID,
+			Text:            "Ошибка получения данных сервера",
+			ShowAlert:       true})
+		return
+	}
+
+	// Готовим сообщение с информацией о сервере
+	statusText := "Отключен"
+	healthText := "Недоступен"
+
+	if server.IsEnabled {
+		statusText = "Активен"
+	}
+
+	if server.IsHealthy {
+		healthText = "Доступен"
+	}
+
+	msgText := fmt.Sprintf("*Информация о сервере*\n\n"+
+		"ID: `%s`\n"+
+		"Имя: `%s`\n"+
+		"Локация: `%s`\n"+
+		"Публичный хост: `%s`\n"+
+		"API хост: `%s`\n"+
+		"Inbound ID: `%d`\n"+
+		"Статус: `%s`\n"+
+		"Соединение: `%s`",
+		server.ID.Hex(), server.Name, server.Location,
+		server.PublicHost, server.ApiHost, server.TargetInboundID,
+		statusText, healthText)
+
+	// Создаем клавиатуру для управления сервером
+	keyboard := viewServerKeyboard(server)
+
+	// Отвечаем на callback
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID})
+
+	// Отправляем новое сообщение с информацией о сервере
+	chatID := cb.From.ID
+	sendParams := &gobot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        escapeMarkdownV2(msgText),
+		ParseMode:   "MarkdownV2",
+		ReplyMarkup: keyboard,
+	}
+
+	_, sendErr := bot.SendMessage(ctx, sendParams)
+	if sendErr != nil {
+		b.logger.ErrorContext(ctx, "Failed to send server details message",
+			slog.Int64("chat_id", chatID),
+			slog.Any("error", sendErr))
+	}
+}
+
+// handleAdminServerDeleteConfirmCallback - Обработчик для подтверждения удаления сервера
+func (b *Bot) handleAdminServerDeleteConfirmCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	user := UserFromContext(ctx)
+	if user == nil {
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка: пользователь не найден", ShowAlert: true})
+		return
+	}
+
+	// Извлекаем serverID из callbackData
+	callbackData := cb.Data
+	serverIDHex := strings.TrimPrefix(callbackData, callbackAdminServerDeleteConfirm)
+
+	b.logger.InfoContext(ctx, "Handling admin server delete confirm callback",
+		slog.String("admin_user_id", user.ID.Hex()),
+		slog.String("server_id", serverIDHex))
+
+	// Проверяем, что сервер существует перед удалением
+	server, err := b.serverService.GetServer(ctx, serverIDHex)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to get server details for delete",
+			slog.String("server_id", serverIDHex),
+			slog.Any("error", err))
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+			CallbackQueryID: cb.ID,
+			Text:            "Ошибка: сервер не найден",
+			ShowAlert:       true})
+		return
+	}
+
+	// Запоминаем имя сервера для сообщения об успешном удалении
+	serverName := server.Name
+
+	// Удаляем сервер
+	err = b.serverService.DeleteServer(ctx, serverIDHex)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to delete server",
+			slog.String("server_id", serverIDHex),
+			slog.Any("error", err))
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+			CallbackQueryID: cb.ID,
+			Text:            "Ошибка при удалении сервера",
+			ShowAlert:       true})
+		return
+	}
+
+	// Отвечаем на callback
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+		CallbackQueryID: cb.ID,
+		Text:            "Сервер удален",
+	})
+
+	// Отправляем сообщение о успешном удалении
+	chatID := cb.From.ID
+	msgText := fmt.Sprintf("✅ Сервер *%s* успешно удален", serverName)
+
+	sendParams := &gobot.SendMessageParams{
+		ChatID:    chatID,
+		Text:      escapeMarkdownV2(msgText),
+		ParseMode: "MarkdownV2",
+	}
+
+	_, _ = bot.SendMessage(ctx, sendParams)
+
+	// Показываем список серверов
+	b.handleAdminServerListCallback(ctx, bot, update)
+}
+
+// handleAdminServerDeleteCancelCallback - Обработчик для отмены удаления сервера
+func (b *Bot) handleAdminServerDeleteCancelCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	user := UserFromContext(ctx)
+	if user == nil {
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка: пользователь не найден", ShowAlert: true})
+		return
+	}
+
+	// Извлекаем serverID из callbackData
+	callbackData := cb.Data
+	serverIDHex := strings.TrimPrefix(callbackData, callbackAdminServerDeleteCancel)
+
+	b.logger.InfoContext(ctx, "Handling admin server delete cancel callback",
+		slog.String("admin_user_id", user.ID.Hex()),
+		slog.String("server_id", serverIDHex))
+
+	// Отвечаем на callback
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+		CallbackQueryID: cb.ID,
+		Text:            "Удаление отменено",
+	})
+
+	// Возвращаемся к просмотру сервера
+	viewUpdate := &models.Update{
+		CallbackQuery: &models.CallbackQuery{
+			ID:   cb.ID,
+			From: cb.From,
+			Data: callbackAdminServerView + serverIDHex,
+		},
+	}
+
+	b.handleAdminServerViewCallback(ctx, bot, viewUpdate)
+}
+
+// handleAdminServerToggleCallback - Обработчик для включения/выключения сервера
+func (b *Bot) handleAdminServerToggleCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	cb := update.CallbackQuery
+	user := UserFromContext(ctx)
+	if user == nil {
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: cb.ID, Text: "Ошибка: пользователь не найден", ShowAlert: true})
+		return
+	}
+
+	// Извлекаем serverID из callbackData
+	callbackData := cb.Data
+	serverIDHex := strings.TrimPrefix(callbackData, callbackAdminServerToggle)
+
+	b.logger.InfoContext(ctx, "Handling admin server toggle callback",
+		slog.String("admin_user_id", user.ID.Hex()),
+		slog.String("server_id", serverIDHex))
+
+	// Получаем информацию о сервере
+	server, err := b.serverService.GetServer(ctx, serverIDHex)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to get server details for toggle",
+			slog.String("server_id", serverIDHex),
+			slog.Any("error", err))
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+			CallbackQueryID: cb.ID,
+			Text:            "Ошибка получения данных сервера",
+			ShowAlert:       true})
+		return
+	}
+
+	// Меняем статус на противоположный
+	server.IsEnabled = !server.IsEnabled
+
+	// Обновляем сервер в базе данных
+	err = b.serverService.UpdateServer(ctx, serverIDHex, server)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to update server status",
+			slog.String("server_id", serverIDHex),
+			slog.Bool("new_status", server.IsEnabled),
+			slog.Any("error", err))
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+			CallbackQueryID: cb.ID,
+			Text:            "Ошибка при обновлении статуса сервера",
+			ShowAlert:       true})
+		return
+	}
+
+	// Формируем текст ответа
+	statusText := "отключен"
+	if server.IsEnabled {
+		statusText = "включен"
+	}
+
+	// Отвечаем на callback
+	_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{
+		CallbackQueryID: cb.ID,
+		Text:            "Сервер " + statusText,
+	})
+
+	// Отправляем обновленную информацию о сервере, используя тот же метод, что и при просмотре
+	// Создаем фиктивный update с тем же callback для вызова handleAdminServerViewCallback
+	viewUpdate := &models.Update{
+		CallbackQuery: &models.CallbackQuery{
+			ID:   cb.ID,
+			From: cb.From,
+			Data: callbackAdminServerView + serverIDHex,
+		},
+	}
+
+	b.handleAdminServerViewCallback(ctx, bot, viewUpdate)
+}
+
+// handleAdminServerBackToListCallback - Обработчик для возврата к списку серверов
+func (b *Bot) handleAdminServerBackToListCallback(ctx context.Context, bot *gobot.Bot, update *models.Update) {
+	// TODO: Показать список серверов (вызвать handleAdminServerListCallback или похожую логику)
+	// Возможно, нужно будет отредактировать исходное сообщение
+	// Вместо простого ответа, здесь нужно отредактировать сообщение со списком серверов
+	b.handleAdminServerListCallback(ctx, bot, update) // Вызываем обработчик списка
 }

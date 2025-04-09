@@ -33,4 +33,5 @@ type SubscriptionService interface {
 	FindAndExpireSubscriptions(ctx context.Context) error
 	GetSubscriptionQRCode(ctx context.Context, sub *domain.Subscription) ([]byte, error)
 	ActivateSubscription(ctx context.Context, userID, planID, paymentID primitive.ObjectID) error
+	UpdateTrafficStats(ctx context.Context, sub *domain.Subscription) error
 }

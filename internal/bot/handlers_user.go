@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"xray-vpn-tg-bot/internal/apperrors"
+	"xray-vpn-tg-bot/internal/xui"
 
 	gobot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -158,12 +159,82 @@ func (b *Bot) mySubscriptionsHandler(ctx context.Context, bot *gobot.Bot, update
 	loc, _ := time.LoadLocation("Europe/Moscow") // Example: Moscow timezone
 	expiryStr := sub.ExpiresAt.In(loc).Format("02.01.2006 15:04 MST")
 
-	// Format traffic usage/limit (convert bytes to GB)
-	trafficLimitStr := "Безлимитно ∞"
-	if sub.TrafficLimit > 0 {
-		trafficLimitStr = fmt.Sprintf("%.2f GB", float64(sub.TrafficLimit)/(1024*1024*1024))
+	// Если у подписки настроен сервер, пытаемся получить актуальные данные из 3x-ui
+	var trafficUsedStr, trafficLimitStr, upTrafficStr, downTrafficStr string
+
+	// Для отображения статуса подписки
+	statusStr := translateStatus(sub.Status)
+	isEnabledInXUI := true // По умолчанию считаем, что в XUI подписка активна
+
+	if !sub.ServerID.IsZero() && sub.XuiInboundID > 0 && sub.XuiClientUID != "" {
+		// Пытаемся получить актуальные данные из 3x-ui
+		server, err := b.serverService.GetServer(ctx, sub.ServerID.Hex())
+		if err == nil {
+			// Создаем клиент для взаимодействия с 3x-ui API
+			xuiClient, err := xui.NewClient(server.ApiHost, server.ApiUsername, server.ApiPassword, time.Second*30, b.logger)
+			if err == nil {
+				// Получаем актуальные данные о трафике
+				clientTraffic, err := xuiClient.GetClientTraffic(ctx, sub.XuiClientUID)
+				if err == nil {
+					// Обновляем информацию о трафике в базе данных
+					sub.TrafficUsed = clientTraffic.Up + clientTraffic.Down
+					sub.ExpiresAt = time.UnixMilli(clientTraffic.ExpiryTime)
+					sub.TrafficLimit = clientTraffic.Total
+
+					// Получаем статус из 3x-ui
+					isEnabledInXUI = clientTraffic.Enable
+
+					// Сохраняем обновленные данные в MongoDB
+					err = b.subscriptionService.UpdateTrafficStats(ctx, sub)
+					if err != nil {
+						b.logger.ErrorContext(ctx, "Failed to update traffic stats in database",
+							slog.String("sub_id", sub.ID.Hex()),
+							slog.Any("error", err))
+					}
+
+					// Форматируем строки с информацией о трафике
+					upTrafficStr = formatBytes(clientTraffic.Up)
+					downTrafficStr = formatBytes(clientTraffic.Down)
+
+					// Обновляем строку статуса с учетом информации из 3x-ui
+					statusStr = translateStatusWithXUI(sub.Status, isEnabledInXUI, clientTraffic.Up+clientTraffic.Down, clientTraffic.Total)
+				}
+			}
+		}
 	}
-	trafficUsedStr := fmt.Sprintf("%.2f GB", float64(sub.TrafficUsed)/(1024*1024*1024))
+
+	// Используем данные из MongoDB, если не смогли получить из 3x-ui
+	if upTrafficStr == "" || downTrafficStr == "" {
+		trafficUsedStr = formatBytes(sub.TrafficUsed)
+		if sub.TrafficLimit > 0 {
+			trafficLimitStr = formatBytes(sub.TrafficLimit)
+		} else {
+			trafficLimitStr = "Безлимитно ∞"
+		}
+	} else {
+		// Форматируем строки использования трафика
+		trafficUsedStr = formatBytes(sub.TrafficUsed)
+		if sub.TrafficLimit > 0 {
+			trafficLimitStr = formatBytes(sub.TrafficLimit)
+			// Вычисляем оставшийся трафик
+			remainingTraffic := sub.TrafficLimit - sub.TrafficUsed
+			if remainingTraffic < 0 {
+				remainingTraffic = 0
+			}
+			trafficUsedStr = fmt.Sprintf("%s (↑ %s / ↓ %s) из %s",
+				formatBytes(sub.TrafficUsed),
+				upTrafficStr,
+				downTrafficStr,
+				trafficLimitStr)
+			trafficLimitStr = fmt.Sprintf("Осталось: %s", formatBytes(remainingTraffic))
+		} else {
+			trafficUsedStr = fmt.Sprintf("%s (↑ %s / ↓ %s)",
+				formatBytes(sub.TrafficUsed),
+				upTrafficStr,
+				downTrafficStr)
+			trafficLimitStr = "Безлимитно ∞"
+		}
+	}
 
 	// Build message text without manual MarkdownV2 escapes inside
 	msgTextFormat := `✨ *Ваша активная подписка:*` +
@@ -173,7 +244,9 @@ func (b *Bot) mySubscriptionsHandler(ctx context.Context, bot *gobot.Bot, update
 Истекает: *%s*` +
 		`
 
-Трафик (исп./лимит): *%s* / *%s*` +
+Трафик: *%s*` +
+		`
+Лимит: *%s*` +
 		`
 Статус: *%s*`
 
@@ -201,11 +274,11 @@ func (b *Bot) mySubscriptionsHandler(ctx context.Context, bot *gobot.Bot, update
 	}
 
 	msgText = fmt.Sprintf(msgTextFormat,
-		planName,                    // Assuming planName is already escaped or safe
-		expiryStr,                   // Assuming expiryStr is safe
-		trafficUsedStr,              // Assuming trafficUsedStr is safe
-		trafficLimitStr,             // Assuming trafficLimitStr is safe
-		translateStatus(sub.Status), // Assuming translateStatus is safe - lives in helpers.go
+		planName,        // Assuming planName is already escaped or safe
+		expiryStr,       // Assuming expiryStr is safe
+		trafficUsedStr,  // Assuming trafficUsedStr is safe
+		trafficLimitStr, // Assuming trafficLimitStr is safe
+		statusStr,       // Статус с учетом данных из 3x-ui, если доступны
 	)
 
 	// Escape the final message text for MarkdownV2
@@ -218,6 +291,29 @@ func (b *Bot) mySubscriptionsHandler(ctx context.Context, bot *gobot.Bot, update
 		ReplyMarkup: replyMarkup,
 	}
 	_, _ = bot.SendMessage(ctx, params)
+}
+
+// formatBytes форматирует количество байт в читабельную форму (KB, MB, GB)
+func formatBytes(bytes int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+		TB = 1024 * GB
+	)
+
+	switch {
+	case bytes >= TB:
+		return fmt.Sprintf("%.2f TB", float64(bytes)/TB)
+	case bytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/GB)
+	case bytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/MB)
+	case bytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/KB)
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
 }
 
 // referralHandler displays referral information.
