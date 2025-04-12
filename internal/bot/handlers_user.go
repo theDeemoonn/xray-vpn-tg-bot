@@ -99,7 +99,9 @@ func (b *Bot) buySubscriptionHandler(ctx context.Context, bot *gobot.Bot, update
 		msgText.WriteString(fmt.Sprintf("⏱ Длительность: %s\n", escapeMarkdownV2(plan.DurationString())))
 
 		if plan.TrafficGB > 0 {
-			msgText.WriteString(fmt.Sprintf("📊 Трафик: %s\n", escapeMarkdownV2(fmt.Sprintf("%d GB", plan.TrafficGB))))
+			// Форматируем трафик в человекочитаемый вид
+			trafficStr := formatBytes(int64(plan.TrafficGB))
+			msgText.WriteString(fmt.Sprintf("📊 Трафик: %s\n", escapeMarkdownV2(trafficStr)))
 		} else {
 			msgText.WriteString("📊 Трафик: Безлимитный\n")
 		}

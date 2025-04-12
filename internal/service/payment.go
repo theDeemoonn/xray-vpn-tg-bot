@@ -127,16 +127,20 @@ func (s *Payments) InitiatePayment(ctx context.Context, userID, planID primitive
 	}
 
 	paymentID := primitive.NewObjectID()
+	// Генерируем временный уникальный идентификатор для ProviderPaymentID
+	tempProviderID := fmt.Sprintf("pending_%s_%d", paymentID.Hex(), time.Now().UnixNano())
+
 	localPayment := &domain.Payment{
-		ID:        paymentID,
-		UserID:    userID,
-		PlanID:    planID,
-		Amount:    plan.Price,    // Store the actual price at the time of initiation
-		Currency:  plan.Currency, // Store the currency
-		Status:    domain.PaymentStatusPending,
-		Provider:  domain.PaymentProviderTelegram, // Assuming Telegram Payments
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:                paymentID,
+		UserID:            userID,
+		PlanID:            planID,
+		Amount:            plan.Price,    // Store the actual price at the time of initiation
+		Currency:          plan.Currency, // Store the currency
+		Status:            domain.PaymentStatusPending,
+		Provider:          domain.PaymentProviderTelegram, // Assuming Telegram Payments
+		ProviderPaymentID: tempProviderID,                 // Устанавливаем временный уникальный ID
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
 	}
 
 	if err := s.paymentRepo.Create(ctx, localPayment); err != nil {

@@ -193,6 +193,80 @@ func (c *subscriptionConfigurator) ConfigureSubscriptionServer(ctx context.Conte
 			slog.String("client_email", xuiClientEmail),
 			slog.Any("error", err),
 		)
+
+		// Проверяем, является ли ошибка дублированием email
+		if strings.Contains(err.Error(), "Duplicate email") {
+			c.logger.InfoContext(ctx, "Detected duplicate email error, trying to update existing client instead",
+				slog.String("client_email", xuiClientEmail))
+
+			// Получаем данные об inbound для поиска клиента по email
+			inbound, inboundErr := xuiClient.GetInbound(ctx, server.TargetInboundID)
+			if inboundErr != nil {
+				c.logger.ErrorContext(ctx, "Failed to get inbound for client search",
+					slog.String("server_id", serverID.Hex()),
+					slog.Int("inbound_id", server.TargetInboundID),
+					slog.Any("error", inboundErr))
+				return apperrors.NewInternalError(fmt.Sprintf("Ошибка получения данных с сервера X-UI %s", server.Name), inboundErr)
+			}
+
+			// Ищем клиента с указанным email
+			var foundClient *xui.ClientSettings
+			for _, client := range inbound.Clients {
+				if client.Email == xuiClientEmail {
+					foundClient = &client
+					c.logger.InfoContext(ctx, "Found existing client with the same email",
+						slog.String("client_email", xuiClientEmail),
+						slog.String("client_uuid", client.UUID))
+					break
+				}
+			}
+
+			if foundClient != nil {
+				// Обновляем найденного клиента
+				foundClient.ExpiryTime = clientSettings.ExpiryTime
+				foundClient.TotalGB = clientSettings.TotalGB
+				foundClient.TelegramID = clientSettings.TelegramID
+				foundClient.SubscriptionID = clientSettings.SubscriptionID
+
+				updateErr := xuiClient.UpdateClient(ctx, server.TargetInboundID, foundClient.UUID, *foundClient)
+				if updateErr != nil {
+					c.logger.ErrorContext(ctx, "Failed to update existing client",
+						slog.String("client_email", xuiClientEmail),
+						slog.String("client_uuid", foundClient.UUID),
+						slog.Any("error", updateErr))
+					return apperrors.NewInternalError(fmt.Sprintf("Ошибка обновления клиента на сервере X-UI %s", server.Name), updateErr)
+				}
+
+				c.logger.InfoContext(ctx, "Successfully updated existing client instead of creating a new one",
+					slog.String("client_email", xuiClientEmail),
+					slog.String("client_uuid", foundClient.UUID))
+
+				// Обновляем информацию о подписке с найденными данными
+				sub.ServerID = serverID
+				sub.XuiInboundID = server.TargetInboundID
+				sub.XuiClientUID = xuiClientEmail    // Используем email как идентификатор клиента
+				sub.XuiClientUUID = foundClient.UUID // Используем UUID найденного клиента
+				sub.UpdatedAt = time.Now()
+
+				if err := c.subRepo.Update(ctx, sub); err != nil {
+					c.logger.ErrorContext(ctx, "Failed to update subscription with found client data",
+						slog.String("sub_id", subID.Hex()),
+						slog.Any("error", err))
+					return err
+				}
+
+				c.logger.InfoContext(ctx, "Subscription linked to existing client successfully",
+					slog.String("sub_id", subID.Hex()),
+					slog.String("server_id", serverID.Hex()),
+					slog.String("client_uuid", foundClient.UUID))
+				return nil
+			}
+
+			// Если клиент не найден, продолжаем с обычной ошибкой
+			c.logger.ErrorContext(ctx, "Could not find client with duplicate email",
+				slog.String("client_email", xuiClientEmail))
+		}
+
 		return apperrors.NewInternalError(fmt.Sprintf("Ошибка создания клиента на сервере X-UI %s", server.Name), err)
 	}
 	c.logger.InfoContext(ctx, "X-UI client created successfully", slog.String("server_id", serverID.Hex()), slog.String("client_email", xuiClientEmail))

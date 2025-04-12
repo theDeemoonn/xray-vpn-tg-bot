@@ -135,20 +135,21 @@ func (r *SubscriptionRepo) Update(ctx context.Context, sub *domain.Subscription)
 
 	// Explicitly set fields to update
 	updateSet := bson.M{
-		"plan_id":        sub.PlanID,
-		"server_id":      sub.ServerID,
-		"user_id":        sub.UserID,
-		"xui_inbound_id": sub.XuiInboundID, // Corrected field name
-		"xui_client_uid": sub.XuiClientUID, // Corrected field name
-		"status":         sub.Status,
-		"activated_at":   sub.ActivatedAt, // Corrected field name
-		"expires_at":     sub.ExpiresAt,
-		"traffic_limit":  sub.TrafficLimit,
-		"traffic_used":   sub.TrafficUsed,
-		"auto_renew":     sub.AutoRenew,
-		"payment_id":     sub.PaymentID,
-		"config_link":    sub.ConfigLink,
-		"updated_at":     sub.UpdatedAt,
+		"plan_id":         sub.PlanID,
+		"server_id":       sub.ServerID,
+		"user_id":         sub.UserID,
+		"xui_inbound_id":  sub.XuiInboundID,  // Corrected field name
+		"xui_client_uid":  sub.XuiClientUID,  // Corrected field name
+		"xui_client_uuid": sub.XuiClientUUID, // UUID клиента в XUI
+		"status":          sub.Status,
+		"activated_at":    sub.ActivatedAt, // Corrected field name
+		"expires_at":      sub.ExpiresAt,
+		"traffic_limit":   sub.TrafficLimit,
+		"traffic_used":    sub.TrafficUsed,
+		"auto_renew":      sub.AutoRenew,
+		"payment_id":      sub.PaymentID,
+		"config_link":     sub.ConfigLink,
+		"updated_at":      sub.UpdatedAt,
 	}
 	update := bson.M{"$set": updateSet}
 

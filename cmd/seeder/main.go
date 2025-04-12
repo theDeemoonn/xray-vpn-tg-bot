@@ -123,7 +123,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Price:     70.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 1, // 1 час
-			TrafficGB: 3,             // 3 GB Limit
+			TrafficGB: 3221225472,    // 3 GB Limit
 			IsActive:  true,
 			SortOrder: 1,
 			CreatedAt: now,
@@ -134,7 +134,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Price:     85.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 3, // 3 часа
-			TrafficGB: 5,             // 5 GB Limit
+			TrafficGB: 5368709120,    // 5 GB Limit
 			IsActive:  true,
 			SortOrder: 2,
 			CreatedAt: now,
@@ -146,7 +146,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Price:     120.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24, // 1 день
-			TrafficGB: 10,             // 10 GB Limit
+			TrafficGB: 10737418240,    // 10 GB Limit
 			IsActive:  true,
 			SortOrder: 4,
 			CreatedAt: now,
@@ -157,7 +157,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Price:     190.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24 * 7, // 1 неделя
-			TrafficGB: 40,                 // 40 GB Limit
+			TrafficGB: 42949672960,        // 40 GB Limit
 			IsActive:  true,
 			SortOrder: 6,
 			CreatedAt: now,
@@ -168,7 +168,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Price:     220.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24 * 30, // Use time.Duration
-			TrafficGB: 50,                  // 50 GB Limit
+			TrafficGB: 53687091200,         // 50 GB Limit
 			IsActive:  true,
 			SortOrder: 7,
 			CreatedAt: now,
@@ -190,7 +190,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Price:     400.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24 * 90, // Use time.Duration
-			TrafficGB: 150,                 // 150 GB Limit
+			TrafficGB: 161061273600,        // 150 GB Limit
 			IsActive:  true,
 			SortOrder: 9,
 			CreatedAt: now,
@@ -212,7 +212,7 @@ func seedPlans(ctx context.Context, collection *mongo.Collection, logger *slog.L
 			Price:     1900.00,
 			Currency:  "RUB",
 			Duration:  time.Hour * 24 * 365, // 1 год
-			TrafficGB: 500,                  // 500 GB Limit
+			TrafficGB: 536870912000,         // 500 GB Limit
 			IsActive:  true,
 			SortOrder: 11,
 			CreatedAt: now,

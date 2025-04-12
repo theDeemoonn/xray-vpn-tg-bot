@@ -159,7 +159,7 @@ func (c *Client) AddClient(ctx context.Context, inboundID int, client ClientSett
 
 // UpdateClient updates an existing client within a specific inbound.
 // This endpoint is often used to enable/disable clients, update expiry, traffic, etc.
-// Note: X-UI API for updating clients can be inconsistent. This implementation assumes the /panel/inbound/updateClient/{clientId} endpoint
+// Note: X-UI API for updating clients can be inconsistent. This implementation assumes the /panel/api/inbounds/updateClient/{clientId} endpoint
 // exists and works by passing the full client settings structure again.
 func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID string, settings ClientSettings) error {
 	// Ensure login before operation
@@ -167,53 +167,95 @@ func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID str
 		return err
 	}
 
+	c.logger.InfoContext(ctx, "Updating client settings",
+		slog.Int("inbound_id", inboundID),
+		slog.String("client_uuid", clientUUID),
+		slog.String("email", settings.Email),
+		slog.Int64("expiry_time", settings.ExpiryTime),
+		slog.Int("total_gb", settings.TotalGB))
+
 	// Prepare the API endpoint URL - обновлено для 3x-ui API
 	endpoint := path.Join(c.apiPath, "updateClient", clientUUID)
 	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
 
-	// Create the request body with the full settings structure
-	reqBody := map[string]interface{}{
-		"id":         inboundID, // The inbound ID
+	// Формируем объект с настройками клиента
+	clientSettings := map[string]interface{}{
+		"id":         clientUUID, // ID клиента (UUID)
 		"enable":     settings.Enable,
 		"email":      settings.Email,
-		"expiryTime": settings.ExpiryTime,
+		"flow":       settings.Flow, // Добавляем flow
+		"tgId":       settings.TelegramID,
+		"subId":      settings.SubscriptionID,
+		"limitIp":    settings.LimitIPs,
 		"totalGB":    settings.TotalGB,
-		// Include other relevant fields from ClientSettings if needed by the API
-		"limitIp": settings.LimitIPs,
-		"subId":   settings.SubscriptionID,
-		"tgId":    settings.TelegramID,
+		"expiryTime": settings.ExpiryTime,
 	}
 
-	// Execute the request
-	resp, err := c.executeRequest(ctx, http.MethodPost, apiURL.String(), reqBody)
+	// Создаем settingsObj с массивом clients
+	settingsObj := map[string]interface{}{
+		"clients": []interface{}{clientSettings},
+	}
+
+	// Маршалим настройки клиента в JSON-строку
+	settingsJSON, err := json.Marshal(settingsObj)
+	if err != nil {
+		return fmt.Errorf("failed to marshal client settings: %w", err)
+	}
+
+	// Создаем основной запрос, где settings - это СТРОКА
+	reqPayload := map[string]interface{}{
+		"id":       inboundID,            // ID инбаунда как число
+		"settings": string(settingsJSON), // Настройки клиента как СТРОКА JSON
+	}
+
+	// Маршалим весь запрос в JSON для логирования
+	jsonDebug, _ := json.Marshal(reqPayload)
+	c.logger.Debug("Sending UpdateClient request body",
+		slog.String("body", string(jsonDebug)),
+		slog.String("email", settings.Email),
+		slog.String("uuid", clientUUID))
+
+	// Отправляем запрос
+	resp, err := c.doRequestWithLogin(ctx, http.MethodPost, apiURL.String(), bytes.NewBuffer(jsonDebug))
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	// Parse the response
-	var response APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		c.logger.ErrorContext(ctx, "Failed to decode client update response", slog.String("error", err.Error()))
-		return fmt.Errorf("failed to decode API response: %w", err)
+	// Читаем тело ответа полностью
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Check the response status
-	if !response.Success {
-		c.logger.ErrorContext(ctx, "X-UI failed to update client",
+	// Декодируем как GenericResponse
+	var genericResp GenericResponse
+	err = json.Unmarshal(respBody, &genericResp)
+	if err != nil {
+		return fmt.Errorf("failed to decode response: %w, body: %s", err, string(respBody))
+	}
+
+	// Проверяем успешность операции
+	if genericResp.Success {
+		c.logger.Info("Successfully updated x-ui client",
 			slog.Int("inbound_id", inboundID),
 			slog.String("client_uuid", clientUUID),
-			slog.String("message", response.Message),
-		)
-		return fmt.Errorf("x-ui API error during update: %s", response.Message)
+			slog.String("client_email", settings.Email),
+			slog.Bool("enabled", settings.Enable))
+		return nil
 	}
 
-	c.logger.InfoContext(ctx, "Successfully updated x-ui client",
+	// В случае ошибки
+	errMsg := genericResp.Msg
+	if errMsg == "" {
+		errMsg = "unknown error from 3x-ui response"
+	}
+	c.logger.Error("Failed to update x-ui client",
 		slog.Int("inbound_id", inboundID),
 		slog.String("client_uuid", clientUUID),
-		slog.Bool("enabled", settings.Enable),
-	)
-	return nil
+		slog.String("msg", errMsg),
+		slog.String("raw_body", string(respBody)))
+	return fmt.Errorf("%w: %s", ErrOperationFailed, errMsg)
 }
 
 // DeleteClient removes a client from a specific inbound.
@@ -313,52 +355,33 @@ func (c *Client) GetClientsByMetadata(ctx context.Context, tgID string, subID st
 
 	// Ищем клиента с совпадающими metadata во всех инбаундах
 	for _, inbound := range inbounds {
-		settings := ""
-		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
-			c.logger.WarnContext(ctx, "Не удалось распарсить настройки инбаунда",
+		// Получаем детали инбаунда
+		parsedInbound, err := c.GetInbound(ctx, inbound.ID)
+		if err != nil {
+			c.logger.WarnContext(ctx, "Не удалось получить детали инбаунда",
 				slog.Int("inbound_id", inbound.ID),
 				slog.Any("error", err))
 			continue
 		}
 
-		// Поиск клиентов по различным протоколам
-		switch inbound.Protocol {
-		case "vless", "vmess", "trojan", "shadowsocks":
-			// Проверяем всех клиентов в инбаунде
-			var clientEmail string
-			var clientFound bool
-
-			// Пытаемся найти клиента, у которого tgId и subId совпадают с искомыми
-			if strings.Contains(settings, fmt.Sprintf(`"tgId":"%s"`, tgID)) &&
-				strings.Contains(settings, fmt.Sprintf(`"subId":"%s"`, subID)) {
-				c.logger.InfoContext(ctx, "Найдены совпадения в метаданных клиента",
-					slog.Int("inbound_id", inbound.ID))
-
-				// Получаем клиентов этого инбаунда для более точного поиска
-				if inbound.ClientStats != nil {
-					for _, client := range inbound.ClientStats {
-						if client.TgID == tgID && client.SubID == subID {
-							clientEmail = client.Email
-							clientFound = true
-							c.logger.InfoContext(ctx, "Найден клиент по tgId и subId",
-								slog.Int("inbound_id", inbound.ID),
-								slog.String("email", clientEmail))
-							break
-						}
-					}
-				}
-
-				// Если нашли клиента, получаем его полные настройки
-				if clientFound {
-					settings, err := c.GetClientSettings(ctx, inbound.ID, clientEmail)
-					if err == nil && settings != nil {
-						return settings, inbound.ID, nil
-					}
-				}
+		// Проверяем всех клиентов в инбаунде
+		for _, client := range parsedInbound.Clients {
+			// Проверяем совпадение метаданных
+			if (client.TelegramID == tgID && tgID != "") || (client.SubscriptionID == subID && subID != "") {
+				c.logger.InfoContext(ctx, "Найден клиент по метаданным",
+					slog.Int("inbound_id", inbound.ID),
+					slog.String("email", client.Email),
+					slog.String("uuid", client.UUID),
+					slog.String("tg_id", client.TelegramID),
+					slog.String("sub_id", client.SubscriptionID))
+				return &client, inbound.ID, nil
 			}
 		}
 	}
 
+	c.logger.WarnContext(ctx, "Клиент не найден по метаданным",
+		slog.String("tg_id", tgID),
+		slog.String("sub_id", subID))
 	return nil, 0, ErrClientNotFound
 }
 
@@ -415,5 +438,70 @@ func (c *Client) UpdateClientMetadata(ctx context.Context, email string, tgID st
 		slog.String("email", email),
 		slog.String("tg_id", tgID),
 		slog.String("sub_id", subID))
+	return nil
+}
+
+// UpdateClientByEmail находит клиента по email и обновляет его настройки
+func (c *Client) UpdateClientByEmail(ctx context.Context, inboundID int, email string, expiryTime int64, totalGB int, subID, tgID string) error {
+	c.logger.InfoContext(ctx, "Updating client by email",
+		slog.String("email", email),
+		slog.Int("inbound_id", inboundID),
+		slog.Int64("expiry_time", expiryTime),
+		slog.Int("total_gb", totalGB))
+
+	// Получаем inbound
+	inbound, err := c.GetInbound(ctx, inboundID)
+	if err != nil {
+		c.logger.ErrorContext(ctx, "Failed to get inbound for client update",
+			slog.Int("inbound_id", inboundID),
+			slog.String("email", email),
+			slog.Any("error", err))
+		return fmt.Errorf("failed to get inbound: %w", err)
+	}
+
+	// Ищем клиента с указанным email
+	var targetClient *ClientSettings
+	for _, client := range inbound.Clients {
+		if client.Email == email {
+			c.logger.InfoContext(ctx, "Found client by email",
+				slog.String("email", email),
+				slog.String("uuid", client.UUID))
+
+			// Копируем клиента для обновления
+			targetClient = &client
+			break
+		}
+	}
+
+	if targetClient == nil {
+		c.logger.ErrorContext(ctx, "Client not found by email",
+			slog.String("email", email),
+			slog.Int("inbound_id", inboundID))
+		return fmt.Errorf("client with email %s not found in inbound %d", email, inboundID)
+	}
+
+	// Обновляем настройки
+	targetClient.ExpiryTime = expiryTime
+	targetClient.TotalGB = totalGB
+	targetClient.SubscriptionID = subID
+	if tgID != "" {
+		targetClient.TelegramID = tgID
+	}
+
+	// Отправляем обновление
+	err = c.UpdateClient(ctx, inboundID, targetClient.UUID, *targetClient)
+	if err != nil {
+		c.logger.ErrorContext(ctx, "Failed to update client",
+			slog.String("email", email),
+			slog.String("uuid", targetClient.UUID),
+			slog.Any("error", err))
+		return fmt.Errorf("failed to update client: %w", err)
+	}
+
+	c.logger.InfoContext(ctx, "Client updated successfully",
+		slog.String("email", email),
+		slog.String("uuid", targetClient.UUID),
+		slog.Int64("expiry_time", expiryTime),
+		slog.Int("total_gb", totalGB))
 	return nil
 }
