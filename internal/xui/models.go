@@ -39,7 +39,7 @@ type ClientSettings struct {
 	Flow           string `json:"flow,omitempty"`       // Flow control (e.g., "xtls-rprx-vision")
 	Enable         bool   `json:"enable"`               // Enable/disable client
 	ExpiryTime     int64  `json:"expiryTime,omitempty"` // Expiration timestamp (milliseconds)
-	TotalGB        int    `json:"totalGB,omitempty"`    // Traffic limit in GB (0 = unlimited)
+	TotalBytes     int64  `json:"totalGB,omitempty"`    // Traffic limit in Bytes (0 = unlimited). API expects key "totalGB".
 	LimitIPs       int    `json:"limitIp,omitempty"`    // Max IPs allowed (0 = unlimited)
 	SubscriptionID string `json:"subId,omitempty"`      // Optional Subscription ID
 	TelegramID     string `json:"tgId,omitempty"`       // Optional Telegram ID (as string)

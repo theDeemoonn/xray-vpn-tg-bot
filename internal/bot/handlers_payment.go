@@ -108,11 +108,13 @@ func (b *Bot) successfulPaymentHandler(ctx context.Context, bot *gobot.Bot, upda
 
 	// Send success message to the user
 	b.logger.InfoContext(ctx, "Payment processed and subscription activation triggered successfully", slog.String("payload", payload))
-	// Modify the success message to include a warning about potential reconfiguration need
+	// Modify the success message to include a warning about potential reconfiguration need and instructions
 	successMsg := "✅ Оплата прошла успешно! Ваша подписка активирована (или продлена). " +
-		"Проверьте раздел \"Мои подписки\"."
+		"Проверьте раздел \"🚀 Мои подписки\"."
 	// Add a note about potential server reconfiguration need
-	successMsg += "\n\n⚠️ *Важно:* Если ваша подписка была продлена, возможно, потребуется заново выбрать сервер в разделе \"Мои подписки\", даже если он уже был настроен."
+	successMsg += "\n\n⚠️ *Важно:* Если ваша подписка была продлена, возможно, потребуется заново выбрать сервер в разделе \"🚀 Мои подписки\", даже если он уже был настроен."
+	// Add a suggestion to check instructions with a command link
+	successMsg += "\n\nℹ️ Не знаете, как подключиться? Посмотрите [📱 Инструкции](/instrukcii), чтобы узнать, какие приложения использовать."
 
 	b.sendUserMessage(ctx, bot, chatID, successMsg)
 }

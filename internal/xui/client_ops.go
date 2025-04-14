@@ -35,17 +35,15 @@ func (c *Client) AddClient(ctx context.Context, inboundID int, client ClientSett
 			slog.Int64("expiry_time", client.ExpiryTime))
 	}
 
-	if client.TotalGB > 0 {
-		// В API 3x-ui параметр totalGB должен быть в ГБ
-		clientSettings["totalGB"] = client.TotalGB
+	// Отправляем лимит трафика в байтах под ключом "totalGB"
+	// 0 - означает безлимит
+	clientSettings["totalGB"] = client.TotalBytes
+	if client.TotalBytes > 0 {
 		c.logger.InfoContext(ctx, "Setting traffic limit for client",
 			slog.String("email", client.Email),
-			slog.Int("total_gb", client.TotalGB))
+			slog.Int64("total_bytes", client.TotalBytes))
 	} else {
-		// Если трафик не задан, устанавливаем "неограниченный" трафик (большое значение)
-		// 1073741824 GB = 1 ПБ (Петабайт) - практически неограниченный трафик
-		clientSettings["totalGB"] = 1073741824
-		c.logger.InfoContext(ctx, "Setting unlimited traffic for client (1 PB)",
+		c.logger.InfoContext(ctx, "Setting unlimited traffic for client (0 bytes)",
 			slog.String("email", client.Email))
 	}
 
@@ -139,7 +137,7 @@ func (c *Client) AddClient(ctx context.Context, inboundID int, client ClientSett
 		c.logger.Info("Successfully added x-ui client",
 			slog.Int("inbound_id", inboundID),
 			slog.String("client_email", client.Email),
-			slog.Int("traffic_gb", client.TotalGB),
+			slog.Int64("traffic_bytes_sent", client.TotalBytes),
 			slog.Int64("expiry_time", client.ExpiryTime))
 		return nil
 	}
@@ -153,6 +151,7 @@ func (c *Client) AddClient(ctx context.Context, inboundID int, client ClientSett
 		slog.Int("inbound_id", inboundID),
 		slog.String("client_email", client.Email),
 		slog.String("msg", errMsg),
+		slog.Int64("traffic_bytes_sent", client.TotalBytes),
 		slog.String("raw_body", string(respBody)))
 	return fmt.Errorf("%w: %s", ErrOperationFailed, errMsg)
 }
@@ -172,14 +171,14 @@ func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID str
 		slog.String("client_uuid", clientUUID),
 		slog.String("email", settings.Email),
 		slog.Int64("expiry_time", settings.ExpiryTime),
-		slog.Int("total_gb", settings.TotalGB))
+		slog.Int64("total_bytes", settings.TotalBytes))
 
 	// Prepare the API endpoint URL - обновлено для 3x-ui API
 	endpoint := path.Join(c.apiPath, "updateClient", clientUUID)
 	apiURL := c.baseURL.ResolveReference(&url.URL{Path: endpoint})
 
 	// Формируем объект с настройками клиента
-	clientSettings := map[string]interface{}{
+	clientSettingsMap := map[string]interface{}{
 		"id":         clientUUID, // ID клиента (UUID)
 		"enable":     settings.Enable,
 		"email":      settings.Email,
@@ -187,13 +186,13 @@ func (c *Client) UpdateClient(ctx context.Context, inboundID int, clientUUID str
 		"tgId":       settings.TelegramID,
 		"subId":      settings.SubscriptionID,
 		"limitIp":    settings.LimitIPs,
-		"totalGB":    settings.TotalGB,
+		"totalGB":    settings.TotalBytes, // Отправляем байты под ключом totalGB
 		"expiryTime": settings.ExpiryTime,
 	}
 
 	// Создаем settingsObj с массивом clients
 	settingsObj := map[string]interface{}{
-		"clients": []interface{}{clientSettings},
+		"clients": []interface{}{clientSettingsMap},
 	}
 
 	// Маршалим настройки клиента в JSON-строку
@@ -482,7 +481,7 @@ func (c *Client) UpdateClientByEmail(ctx context.Context, inboundID int, email s
 
 	// Обновляем настройки
 	targetClient.ExpiryTime = expiryTime
-	targetClient.TotalGB = totalGB
+	targetClient.TotalBytes = int64(totalGB)
 	targetClient.SubscriptionID = subID
 	if tgID != "" {
 		targetClient.TelegramID = tgID

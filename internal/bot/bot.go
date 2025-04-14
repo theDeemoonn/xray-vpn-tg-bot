@@ -72,6 +72,7 @@ func New(
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/buy", gobot.MatchTypeExact, b.buySubscriptionHandler)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/referral", gobot.MatchTypeExact, b.referralHandler)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/faq", gobot.MatchTypeExact, b.faqHandler)
+	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/instrukcii", gobot.MatchTypeExact, b.instructionHandler)
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, "/makeadmin", gobot.MatchTypePrefix, b.adminRequired(b.makeAdminHandler))
 
 	b.api.RegisterHandler(gobot.HandlerTypeMessageText, MainMenuButtonMySubscriptions, gobot.MatchTypeExact, b.mySubscriptionsHandler)

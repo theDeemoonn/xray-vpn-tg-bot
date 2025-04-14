@@ -107,24 +107,42 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 			s.logger.InfoContext(ctx, "Reactivating/overwriting existing subscription DB record", slog.String("user_id", userID.Hex()), slog.String("sub_id", existingSub.ID.Hex()), slog.Time("new_expiry", newExpiryDate))
 		}
 
+		// Обновляем общие поля
 		existingSub.PlanID = planID
 		existingSub.ExpiresAt = newExpiryDate
 		existingSub.Status = domain.SubscriptionStatusActive
 		existingSub.ActivatedAt = now
 		existingSub.UpdatedAt = now
 		existingSub.PaymentID = paymentID
-		existingSub.TrafficLimit = int64(plan.TrafficGB) * 1024 * 1024 * 1024
 
-		// Сохраняем использованный трафик при продлении
+		// Рассчитываем новый лимит трафика и сохраняем использованный
+		newPlanTrafficBytes := int64(plan.TrafficGB) // Лимит нового плана в байтах
+
 		if wasExtended {
-			existingSub.TrafficUsed = existingTrafficUsed
-			s.logger.InfoContext(ctx, "Preserving existing traffic usage",
+			// Продление: Суммируем остаток старого трафика с новым лимитом
+			oldTrafficLimit := existingSub.TrafficLimit
+			remainingOldTraffic := oldTrafficLimit - existingTrafficUsed
+			if remainingOldTraffic < 0 {
+				remainingOldTraffic = 0 // Не может быть отрицательным остатком
+			}
+			newTotalTrafficLimit := remainingOldTraffic + newPlanTrafficBytes
+			existingSub.TrafficLimit = newTotalTrafficLimit
+			existingSub.TrafficUsed = existingTrafficUsed // Сохраняем использованный трафик
+
+			s.logger.InfoContext(ctx, "Calculated extended traffic limit",
 				slog.String("sub_id", existingSub.ID.Hex()),
-				slog.Int64("traffic_used", existingTrafficUsed),
-				slog.Int64("traffic_limit", existingSub.TrafficLimit))
+				slog.Int64("old_limit_bytes", oldTrafficLimit),
+				slog.Int64("old_used_bytes", existingTrafficUsed),
+				slog.Int64("remaining_old_bytes", remainingOldTraffic),
+				slog.Int64("new_plan_bytes", newPlanTrafficBytes),
+				slog.Int64("new_total_limit_bytes", newTotalTrafficLimit))
 		} else {
-			// Только для новой или неактивной подписки обнуляем трафик
+			// Новая подписка или перезапись старой: Устанавливаем лимит нового плана и сбрасываем счетчик
+			existingSub.TrafficLimit = newPlanTrafficBytes
 			existingSub.TrafficUsed = 0
+			s.logger.InfoContext(ctx, "Set new traffic limit and reset usage",
+				slog.String("sub_id", existingSub.ID.Hex()),
+				slog.Int64("new_limit_bytes", newPlanTrafficBytes))
 		}
 
 		// Восстанавливаем состояние сервера, если это продление
@@ -205,7 +223,7 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 			PaymentID:    paymentID,
 			CreatedAt:    now,
 			UpdatedAt:    now,
-			TrafficLimit: int64(plan.TrafficGB) * 1024 * 1024 * 1024,
+			TrafficLimit: int64(plan.TrafficGB),
 			TrafficUsed:  0,
 		}
 		if err := s.subRepo.Create(ctx, newSub); err != nil {
@@ -299,17 +317,18 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 					} else {
 						// Обновляем срок действия и трафик
 						expiryTimeMillis := subToConfigure.ExpiresAt.UnixMilli()
-						trafficGB := int(subToConfigure.TrafficLimit / (1024 * 1024 * 1024))
+						// subToConfigure.TrafficLimit уже содержит байты
+						trafficLimitBytes := subToConfigure.TrafficLimit
 
 						s.logger.InfoContext(ctx, "Updating client settings in XUI",
 							slog.String("email", clientSettings.Email),
 							slog.Time("old_expiry", time.UnixMilli(clientSettings.ExpiryTime)),
 							slog.Time("new_expiry", subToConfigure.ExpiresAt),
-							slog.Int("old_traffic_gb", clientSettings.TotalGB),
-							slog.Int("new_traffic_gb", trafficGB))
+							slog.Int64("old_traffic_bytes", clientSettings.TotalBytes),
+							slog.Int64("new_traffic_bytes", trafficLimitBytes))
 
 						clientSettings.ExpiryTime = expiryTimeMillis
-						clientSettings.TotalGB = trafficGB
+						clientSettings.TotalBytes = trafficLimitBytes
 
 						// Получаем ID пользователя Telegram для клиента, если еще не получили
 						if clientSettings.TelegramID == "" {
@@ -359,7 +378,7 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 
 											// Обновляем настройки
 											client.ExpiryTime = expiryTimeMillis
-											client.TotalGB = trafficGB
+											client.TotalBytes = trafficLimitBytes
 											client.SubscriptionID = subToConfigure.ID.Hex()
 											if clientSettings.TelegramID != "" {
 												client.TelegramID = clientSettings.TelegramID
@@ -385,7 +404,7 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 												s.logger.InfoContext(ctx, "Successfully updated client on second attempt",
 													slog.String("client_uid", subToConfigure.XuiClientUID),
 													slog.Time("new_expiry", subToConfigure.ExpiresAt),
-													slog.Int("traffic_gb", trafficGB))
+													slog.Int64("traffic_bytes", trafficLimitBytes))
 											}
 											break
 										}
@@ -395,7 +414,7 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 								s.logger.InfoContext(ctx, "Successfully updated client in 3x-ui after subscription extension",
 									slog.String("client_uid", subToConfigure.XuiClientUID),
 									slog.Time("new_expiry", subToConfigure.ExpiresAt),
-									slog.Int("traffic_gb", trafficGB))
+									slog.Int64("traffic_bytes", trafficLimitBytes))
 
 								// Также обновим данные о сервере в подписке если они изменились
 								if subToConfigure.XuiClientUUID != idField {
@@ -467,10 +486,11 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 
 								// Теперь обновим параметры клиента (срок действия и лимит трафика)
 								expiryTimeMillis := subToConfigure.ExpiresAt.UnixMilli()
-								trafficGB := int(subToConfigure.TrafficLimit / (1024 * 1024 * 1024))
+								// subToConfigure.TrafficLimit уже в байтах
+								trafficLimitBytes := subToConfigure.TrafficLimit
 
 								foundClient.ExpiryTime = expiryTimeMillis
-								foundClient.TotalGB = trafficGB
+								foundClient.TotalBytes = trafficLimitBytes
 								foundClient.SubscriptionID = subToConfigure.ID.Hex()
 
 								// Обновляем клиента в XUI
@@ -478,12 +498,13 @@ func (s *subscriptionService) ActivateSubscription(ctx context.Context, userID, 
 								if err != nil {
 									s.logger.ErrorContext(ctx, "Failed to update client after restoring configuration",
 										slog.String("client_uid", foundClient.Email),
-										slog.Any("error", err))
+										slog.Time("new_expiry", subToConfigure.ExpiresAt),
+										slog.Int64("traffic_bytes", trafficLimitBytes))
 								} else {
 									s.logger.InfoContext(ctx, "Successfully updated client after restoring configuration",
 										slog.String("client_uid", foundClient.Email),
 										slog.Time("new_expiry", subToConfigure.ExpiresAt),
-										slog.Int("traffic_gb", trafficGB))
+										slog.Int64("traffic_bytes", trafficLimitBytes))
 
 									// Успешно восстановили конфигурацию, выходим из функции
 									s.logger.InfoContext(ctx, "Subscription DB activation/update process completed with restored configuration",
@@ -649,7 +670,7 @@ func (s *subscriptionService) CreateSubscription(ctx context.Context, userID pri
 		AutoRenew:    false,
 		CreatedAt:    now,
 		UpdatedAt:    now,
-		TrafficLimit: int64(plan.TrafficGB) * 1024 * 1024 * 1024,
+		TrafficLimit: int64(plan.TrafficGB),
 		TrafficUsed:  0,
 	}
 

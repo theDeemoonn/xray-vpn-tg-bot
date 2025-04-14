@@ -106,18 +106,14 @@ func (c *subscriptionConfigurator) ConfigureSubscriptionServer(ctx context.Conte
 
 	// Рассчитываем конкретные значения для передачи в X-UI
 	expiryTimeMillis := sub.ExpiresAt.UnixMilli()
-	trafficLimitBytes := sub.TrafficLimit
-	trafficGB := 0
-	if trafficLimitBytes > 0 {
-		trafficGB = int(trafficLimitBytes / (1024 * 1024 * 1024))
-	}
+	trafficLimitBytes := sub.TrafficLimit // Already in bytes
 
 	c.logger.InfoContext(ctx, "Creating X-UI client",
 		slog.String("server_id", serverID.Hex()),
 		slog.String("client_email", xuiClientEmail),
 		slog.String("client_uuid", xuiClientUUID),
 		slog.Int64("expiry_time", expiryTimeMillis),
-		slog.Int("traffic_gb", trafficGB))
+		slog.Int64("traffic_bytes", trafficLimitBytes))
 
 	xuiClient, err := c.xuiClientFactory(server)
 	if err != nil {
@@ -143,10 +139,10 @@ func (c *subscriptionConfigurator) ConfigureSubscriptionServer(ctx context.Conte
 	// Формируем настройки клиента в зависимости от протокола и данных подписки
 	clientSettings := xui.ClientSettings{
 		Email:          xuiClientEmail,
-		Enable:         true,             // Активируем клиента
-		ExpiryTime:     expiryTimeMillis, // Устанавливаем время истечения
-		TotalGB:        trafficGB,        // Устанавливаем лимит трафика
-		SubscriptionID: subID.Hex(),      // Передаем ID подписки
+		Enable:         true,              // Активируем клиента
+		ExpiryTime:     expiryTimeMillis,  // Устанавливаем время истечения
+		TotalBytes:     trafficLimitBytes, // Устанавливаем лимит трафика в байтах
+		SubscriptionID: subID.Hex(),       // Передаем ID подписки
 	}
 
 	// Устанавливаем TelegramID, если есть данные о пользователе
@@ -180,7 +176,7 @@ func (c *subscriptionConfigurator) ConfigureSubscriptionServer(ctx context.Conte
 		slog.String("uuid", clientSettings.UUID),
 		slog.Bool("enable", clientSettings.Enable),
 		slog.Int64("expiry_time", clientSettings.ExpiryTime),
-		slog.Int("total_gb", clientSettings.TotalGB),
+		slog.Int64("total_bytes", clientSettings.TotalBytes),
 		slog.String("protocol", clientSettings.Protocol),
 		slog.String("tg_id", clientSettings.TelegramID),
 		slog.String("sub_id", clientSettings.SubscriptionID))
@@ -224,7 +220,7 @@ func (c *subscriptionConfigurator) ConfigureSubscriptionServer(ctx context.Conte
 			if foundClient != nil {
 				// Обновляем найденного клиента
 				foundClient.ExpiryTime = clientSettings.ExpiryTime
-				foundClient.TotalGB = clientSettings.TotalGB
+				foundClient.TotalBytes = clientSettings.TotalBytes
 				foundClient.TelegramID = clientSettings.TelegramID
 				foundClient.SubscriptionID = clientSettings.SubscriptionID
 
