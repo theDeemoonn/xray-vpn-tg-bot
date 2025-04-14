@@ -6,7 +6,7 @@ services:
     container_name: xray_vpn_bot_mongo
     restart: unless-stopped
     ports:
-      - "127.0.0.1:27017:27017" # Bind to localhost only for security
+      - "0.0.0.0:27017:27017" # Bind to localhost only for security
     volumes:
       - mongo_data:/data/db # Persist MongoDB data
     environment:
