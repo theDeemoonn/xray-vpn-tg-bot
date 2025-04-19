@@ -3,6 +3,7 @@ package bot
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,32 @@ import (
 	"github.com/go-telegram/bot/models"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
+
+// --- Структуры для ProviderData Yookassa ---
+
+type ProviderData struct {
+	Receipt Receipt `json:"receipt"`
+}
+
+type Receipt struct {
+	Items         []ReceiptItem `json:"items"`
+	TaxSystemCode int           `json:"tax_system_code,omitempty"` // Указывайте, если обязательно для вашей интеграции
+	// Customer можно опустить, так как используем NeedPhoneNumber/NeedEmail
+}
+
+type ReceiptItem struct {
+	Description    string `json:"description"`     // Наименование товара
+	Quantity       string `json:"quantity"`        // Количество (строкой)
+	Amount         Amount `json:"amount"`          // Сумма (цена * количество)
+	VatCode        int    `json:"vat_code"`        // Ставка НДС (1: без НДС, 2: 0%, 3: 10%, 4: 20%, 5: 10/110, 6: 20/120)
+	PaymentMode    string `json:"payment_mode"`    // Признак способа расчета (full_payment, full_prepayment, prepayment, advance, partial_payment, credit, credit_payment)
+	PaymentSubject string `json:"payment_subject"` // Признак предмета расчета (commodity, service, job, intellectual_activity, payment, etc.)
+}
+
+type Amount struct {
+	Value    string `json:"value"`    // Сумма в рублях (строкой, например "100.00")
+	Currency string `json:"currency"` // Валюта (RUB)
+}
 
 // --- Callback Query Handlers --- //
 
@@ -82,6 +109,36 @@ func (b *Bot) handlePlanSelectionCallback(ctx context.Context, bot *gobot.Bot, u
 		Amount: int(plan.Price * 100), // Amount in smallest currency unit (kopecks for RUB)
 	}}
 
+	// --- Формируем ProviderData для Yookassa ---
+	providerData := ProviderData{
+		Receipt: Receipt{
+			Items: []ReceiptItem{
+				{
+					Description: plan.Name,
+					Quantity:    "1.00", // Количество как строка
+					Amount: Amount{
+						Value:    fmt.Sprintf("%.2f", plan.Price), // Цена в рублях, форматированная как строка "123.00"
+						Currency: strings.ToUpper(plan.Currency),
+					},
+					VatCode:        1,                 // 1: Без НДС (уточните ваш код НДС)
+					PaymentMode:    "full_prepayment", // Или full_payment, зависит от момента оказания услуги (уточните)
+					PaymentSubject: "service",         // Предмет расчета: услуга (уточните)
+				},
+			},
+			TaxSystemCode: 1, // 1: УСН Доходы (уточните вашу систему налогообложения)
+		},
+	}
+
+	providerDataJSON, err := json.Marshal(providerData)
+	if err != nil {
+		b.logger.ErrorContext(ctx, "Failed to marshal provider data for invoice", slog.String("plan_id", plan.ID.Hex()), slog.Any("error", err))
+		b.sendInternalError(ctx, bot, chatID)
+		_, _ = bot.AnswerCallbackQuery(ctx, &gobot.AnswerCallbackQueryParams{CallbackQueryID: update.CallbackQuery.ID})
+		return
+	}
+	providerDataString := string(providerDataJSON)
+	// --- Конец формирования ProviderData ---
+
 	params := &gobot.SendInvoiceParams{
 		ChatID:                    chatID,
 		Title:                     plan.Name,                                                // Invoice title
@@ -90,15 +147,15 @@ func (b *Bot) handlePlanSelectionCallback(ctx context.Context, bot *gobot.Bot, u
 		ProviderToken:             b.cfg.Telegram.ProviderToken,                             // Use ProviderToken from config
 		Currency:                  strings.ToUpper(plan.Currency),                           // Currency code (e.g., "RUB")
 		Prices:                    prices,
-		NeedName:                  false, // Adjust based on provider requirements
-		NeedPhoneNumber:           false,
-		NeedEmail:                 false,
+		NeedName:                  false, // Имя не требуется
+		NeedPhoneNumber:           true,  // Запрашиваем телефон
+		NeedEmail:                 false, // Email не требуется
 		NeedShippingAddress:       false,
-		SendPhoneNumberToProvider: false,
+		SendPhoneNumberToProvider: true, // Отправляем телефон провайдеру (Yookassa)
 		SendEmailToProvider:       false,
-		IsFlexible:                false, // Set to true if prices depend on shipping
-		ReplyMarkup:               nil,   // Explicitly set to nil if no keyboard is needed
-		// ProviderData:          "{}", // Optional JSON object for provider
+		IsFlexible:                false,              // Set to true if prices depend on shipping
+		ProviderData:              providerDataString, // Передаем данные для чека Yookassa
+		ReplyMarkup:               nil,                // Explicitly set to nil if no keyboard is needed
 		// PhotoURL:              "", // Optional photo URL
 		// PhotoSize:             0,
 		// PhotoWidth:            0,
