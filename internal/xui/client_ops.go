@@ -51,10 +51,8 @@ func (c *Client) AddClient(ctx context.Context, inboundID int, client ClientSett
 	switch strings.ToLower(client.Protocol) {
 	case "vless", "vmess":
 		clientSettings["id"] = client.UUID // ID для VMESS/VLESS (в 3x-ui API используется "id", а не "uuid")
-		if client.Flow != "" {
+		if client.Flow != "" && client.Flow != "none" {
 			clientSettings["flow"] = client.Flow
-		} else {
-			clientSettings["flow"] = "none" // Явно указываем flow по умолчанию
 		}
 	case "trojan":
 		clientSettings["password"] = client.UUID // Используем UUID как пароль
